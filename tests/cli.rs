@@ -199,7 +199,14 @@ fn why_finds_a_fixed_wait_in_a_helper_and_counts_spawned_processes() {
     // short-lived helper of its own besides (seen under a stress run, as a
     // copy of the test binary living under one sample), so the total is at
     // least six, and the range [spawned, spawned_at_most] holds six.
-    let sleeps = &w["processes"]["by_program"][0];
+    // (Linux's sh does not exec its last command: there the six `sh`
+    // count too, so `sleep` is found by name, not by place.)
+    let sleeps = w["processes"]["by_program"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["program"] == "sleep")
+        .unwrap();
     assert_eq!(
         (sleeps["program"].as_str(), sleeps["count"].as_u64()),
         (Some("sleep"), Some(6)),

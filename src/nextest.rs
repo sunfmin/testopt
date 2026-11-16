@@ -291,6 +291,11 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
             "--workspace",
             "--no-fail-fast",
             "--no-tests=pass",
+            // Plain lines to parse (CI sets CARGO_TERM_COLOR=always), and
+            // no build chatter: testopt says what it does itself.
+            "--color",
+            "never",
+            "--cargo-quiet",
         ])
         .arg("--tool-config-file")
         .arg(format!("testopt:{}", tool_config.display()))
@@ -344,7 +349,8 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
             if let Some(l) = &log {
                 let _ = writeln!(l.lock().unwrap(), "{line}");
             }
-            let t = line.trim();
+            let plain = strip_ansi(&line);
+            let t = plain.trim();
             let mut p = prog.lock().unwrap();
             if let Some(n) = starting_total(t) {
                 p.total = n;
@@ -387,6 +393,25 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
 
 pub fn run(ws: &Workspace, spec: &Spec) -> Result<Outcome> {
     start(ws, spec)?.wait()
+}
+
+/// A line without its ANSI escapes (`ESC [ … letter`).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// `Starting 5 tests across 2 binaries` → 5.
@@ -486,20 +511,33 @@ pub struct Listed {
 /// `cargo nextest list` of `filter` (building what it needs), matching tests only.
 pub fn list(ws: &Workspace, filter: Option<&str>, env: &[(String, String)]) -> Result<Vec<Listed>> {
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(&ws.root)
-        .args(["nextest", "list", "--workspace", "--message-format", "json"]);
+    cmd.current_dir(&ws.root).args([
+        "nextest",
+        "list",
+        "--workspace",
+        "--message-format",
+        "json",
+        "--color",
+        "never",
+        "--cargo-quiet",
+    ]);
     if let Some(f) = filter {
         cmd.args(["-E", f]);
     }
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd
-        .stderr(Stdio::inherit())
-        .output()
-        .context("running cargo nextest list")?;
+    // The build's output is kept, and shown only when it fails: a target's
+    // own warnings are not testopt's to repeat.
+    let out = cmd.output().context("running cargo nextest list")?;
     if !out.status.success() {
-        bail!("cargo nextest list failed (exit {})", out.status);
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = err.lines().rev().take(40).collect();
+        bail!(
+            "cargo nextest list failed (exit {}):\n{}",
+            out.status,
+            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        );
     }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
     let mut tests = vec![];
@@ -539,6 +577,10 @@ mod tests {
         assert_eq!(
             starting_total("Starting 991 tests across 9 binaries"),
             Some(991)
+        );
+        assert_eq!(
+            strip_ansi("\x1b[32;1m     Summary\x1b[0m [ 1.5s]"),
+            "     Summary [ 1.5s]"
         );
     }
 

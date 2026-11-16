@@ -454,6 +454,18 @@ fn args_of(pid: u32) -> Option<Vec<String>> {
 
 #[cfg(target_os = "linux")]
 fn cpu_of(pid: u32) -> Option<f64> {
+    // schedstat's first field is nanoseconds on a CPU; stat's ticks are
+    // 10ms, more than a short child uses.
+    if let Some(ns) = std::fs::read_to_string(format!("/proc/{pid}/schedstat"))
+        .ok()
+        .and_then(|s| {
+            s.split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<f64>().ok())
+        })
+    {
+        return Some(ns / 1e9);
+    }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let r = stat.rfind(')')?;
     let f: Vec<&str> = stat[r + 2..].split_whitespace().collect();
