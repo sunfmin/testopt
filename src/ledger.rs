@@ -51,7 +51,13 @@ pub fn add(ws: &Workspace, store: &Store, a: Add) -> Result<Value> {
     if !["tried", "kept", "rejected"].contains(&a.status.as_str()) {
         bail!("--status is tried, kept or rejected, not {}", a.status);
     }
-    let threads = a.threads.or_else(|| store.read::<Run>("runs.jsonl").ok()?.last().map(|r| r.threads));
+    let threads = a.threads.or_else(|| {
+        store
+            .read::<Run>("runs.jsonl")
+            .ok()?
+            .last()
+            .map(|r| r.threads)
+    });
     let e = Entry {
         at: now_rfc3339(),
         commit: commit(&ws.root).0,
@@ -71,7 +77,10 @@ pub fn add(ws: &Workspace, store: &Store, a: Add) -> Result<Value> {
 pub fn totals(entries: &[Entry]) -> Value {
     let kept: Vec<&Entry> = entries.iter().filter(|e| e.status == "kept").collect();
     let saved: f64 = kept.iter().filter_map(|e| e.saved_s()).sum();
-    let wall: f64 = kept.iter().filter_map(|e| Some(e.saved_s()? / e.threads? as f64)).sum();
+    let wall: f64 = kept
+        .iter()
+        .filter_map(|e| Some(e.saved_s()? / e.threads? as f64))
+        .sum();
     json!({
         "entries": entries.len(),
         "tried": entries.iter().filter(|e| e.status == "tried").count(),

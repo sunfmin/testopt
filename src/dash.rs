@@ -26,18 +26,29 @@ pub fn frame(ws: &Workspace, store: &Store) -> String {
     let _ = writeln!(s, "{}", "─".repeat(78));
     match crate::jobs::latest(store) {
         Some(dir) => {
-            let id = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let p: Option<Progress> =
-                std::fs::read(dir.join("progress.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let id = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let p: Option<Progress> = std::fs::read(dir.join("progress.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok());
             let done = dir.join("result.json").exists();
             let state = if done { "finished" } else { "running" };
             let _ = writeln!(s, "job {id}: {state}");
             if let Some(p) = p {
-                let pct = if p.total > 0 { 100.0 * p.done as f64 / p.total as f64 } else { 0.0 };
+                let pct = if p.total > 0 {
+                    100.0 * p.done as f64 / p.total as f64
+                } else {
+                    0.0
+                };
                 let width = 40;
                 let filled = (pct / 100.0 * width as f64).round() as usize;
                 let eta = if p.done > 0 && p.total > p.done && !done {
-                    format!("  ~{:.0}s left", p.elapsed_s / p.done as f64 * (p.total - p.done) as f64)
+                    format!(
+                        "  ~{:.0}s left",
+                        p.elapsed_s / p.done as f64 * (p.total - p.done) as f64
+                    )
                 } else {
                     String::new()
                 };
@@ -52,10 +63,21 @@ pub fn frame(ws: &Workspace, store: &Store) -> String {
                     p.elapsed_s
                 );
                 if !p.last.is_empty() {
-                    let _ = writeln!(s, "  last: {}", p.last.chars().take(110).collect::<String>());
+                    let _ = writeln!(
+                        s,
+                        "  last: {}",
+                        p.last.chars().take(110).collect::<String>()
+                    );
                 }
             } else if let Ok(log) = std::fs::read_to_string(dir.join("log")) {
-                for l in log.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev() {
+                for l in log
+                    .lines()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                {
                     let _ = writeln!(s, "  {}", l.chars().take(110).collect::<String>());
                 }
             }
@@ -84,7 +106,16 @@ pub fn frame(ws: &Workspace, store: &Store) -> String {
             for t in tests.iter().take(10) {
                 let name = format!("{} {}", t.binary_id, t.name);
                 let name: String = if name.chars().count() > 90 {
-                    format!("…{}", name.chars().rev().take(89).collect::<Vec<_>>().into_iter().rev().collect::<String>())
+                    format!(
+                        "…{}",
+                        name.chars()
+                            .rev()
+                            .take(89)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<String>()
+                    )
                 } else {
                     name
                 };
@@ -107,10 +138,21 @@ pub fn frame(ws: &Workspace, store: &Store) -> String {
     let _ = writeln!(
         s,
         "ledger: {} entries — {} kept, {} rejected, {} tried; kept saves {} test-s ≈ {} s wall",
-        t["entries"], t["kept"], t["rejected"], t["tried"], t["kept_test_seconds_saved"], t["kept_est_wall_saving_s"]
+        t["entries"],
+        t["kept"],
+        t["rejected"],
+        t["tried"],
+        t["kept_test_seconds_saved"],
+        t["kept_est_wall_saving_s"]
     );
     for e in entries.iter().rev().take(5) {
-        let _ = writeln!(s, "  {:<8} {:<13} {}", e.status, e.kind, e.test.chars().take(90).collect::<String>());
+        let _ = writeln!(
+            s,
+            "  {:<8} {:<13} {}",
+            e.status,
+            e.kind,
+            e.test.chars().take(90).collect::<String>()
+        );
     }
     s
 }

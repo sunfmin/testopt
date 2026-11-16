@@ -38,11 +38,23 @@ impl Workspace {
             .output()
             .context("running cargo metadata")?;
         if !out.status.success() {
-            bail!("cargo metadata in {} failed: {}", dir.display(), String::from_utf8_lossy(&out.stderr));
+            bail!(
+                "cargo metadata in {} failed: {}",
+                dir.display(),
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         let meta: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-        let root = PathBuf::from(meta["workspace_root"].as_str().context("no workspace_root")?);
-        let target_dir = PathBuf::from(meta["target_directory"].as_str().context("no target_directory")?);
+        let root = PathBuf::from(
+            meta["workspace_root"]
+                .as_str()
+                .context("no workspace_root")?,
+        );
+        let target_dir = PathBuf::from(
+            meta["target_directory"]
+                .as_str()
+                .context("no target_directory")?,
+        );
         let mut packages = vec![];
         for p in meta["packages"].as_array().into_iter().flatten() {
             let manifest = PathBuf::from(p["manifest_path"].as_str().unwrap_or_default());
@@ -63,7 +75,12 @@ impl Workspace {
             });
         }
         let id = identity(&root);
-        Ok(Workspace { root, target_dir, id, packages })
+        Ok(Workspace {
+            root,
+            target_dir,
+            id,
+            packages,
+        })
     }
 
     /// The package a nextest binary id belongs to: `pkg`, `pkg::test`,
@@ -76,7 +93,9 @@ impl Workspace {
     /// Source files of the target a binary id builds, then the rest of its
     /// package: where a test's function and its helpers are looked for.
     pub fn sources_of(&self, binary_id: &str) -> Vec<PathBuf> {
-        let Some(pkg) = self.package_of(binary_id) else { return vec![] };
+        let Some(pkg) = self.package_of(binary_id) else {
+            return vec![];
+        };
         let mut files = rust_files(&pkg.dir);
         // The binary's own target directory first, so a name defined in
         // several targets resolves to the one the test is built from.
@@ -84,9 +103,16 @@ impl Workspace {
         let own_dir = match rest {
             Some(r) => {
                 let target = r.trim_start_matches("bin/");
-                pkg.targets.iter().find(|t| t.name == target).and_then(|t| t.src_path.parent().map(Path::to_path_buf))
+                pkg.targets
+                    .iter()
+                    .find(|t| t.name == target)
+                    .and_then(|t| t.src_path.parent().map(Path::to_path_buf))
             }
-            None => pkg.targets.iter().find(|t| t.kind == "lib" || t.kind == "proc-macro").and_then(|t| t.src_path.parent().map(Path::to_path_buf)),
+            None => pkg
+                .targets
+                .iter()
+                .find(|t| t.kind == "lib" || t.kind == "proc-macro")
+                .and_then(|t| t.src_path.parent().map(Path::to_path_buf)),
         };
         if let Some(own) = own_dir {
             files.sort_by_key(|f| !f.starts_with(&own));
@@ -104,7 +130,9 @@ pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             let name = e.file_name();
@@ -129,20 +157,34 @@ pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
 
 fn identity(root: &Path) -> String {
     let git = |args: &[&str]| -> Option<String> {
-        let out = Command::new("git").args(args).current_dir(root).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
     if let Some(roots) = git(&["rev-list", "--max-parents=0", "HEAD"]) {
         let first = roots.lines().last().unwrap_or_default();
-        let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).unwrap_or_default();
+        let common =
+            git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).unwrap_or_default();
         let common = Path::new(&common);
-        let name = if common.file_name().is_some_and(|n| n == ".git") { common.parent() } else { Some(common) }
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "repo".into());
+        let name = if common.file_name().is_some_and(|n| n == ".git") {
+            common.parent()
+        } else {
+            Some(common)
+        }
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
         return format!("{name}-{}", &first[..first.len().min(12)]);
     }
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "ws".into());
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ws".into());
     format!("{name}-{:016x}", fnv(root.to_string_lossy().as_bytes()))
 }
 

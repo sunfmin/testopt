@@ -36,8 +36,16 @@ impl Seen {
     /// `git status`, `afkconvoy tick`, `sh -c sleep`: the program's name and
     /// its first word that is not a flag.
     pub fn label(&self) -> String {
-        let prog = self.args.first().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default();
-        let sub = self.args.iter().skip(1).find(|a| !a.starts_with('-') && !a.contains('/') && a.len() < 40);
+        let prog = self
+            .args
+            .first()
+            .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+            .unwrap_or_default();
+        let sub = self
+            .args
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-') && !a.contains('/') && a.len() < 40);
         match sub {
             Some(s) => format!("{prog} {}", s.split_whitespace().next().unwrap_or("")),
             None => prog,
@@ -45,7 +53,10 @@ impl Seen {
     }
 
     pub fn program(&self) -> String {
-        self.args.first().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default()
+        self.args
+            .first()
+            .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -55,7 +66,10 @@ pub struct Sampler {
 }
 
 pub fn now_epoch() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 impl Sampler {
@@ -90,7 +104,9 @@ impl Sampler {
                     if !ours.contains(pid) {
                         continue;
                     }
-                    let same = tracked_start.get(pid).is_some_and(|s| (s - info.start).abs() < 1e-3);
+                    let same = tracked_start
+                        .get(pid)
+                        .is_some_and(|s| (s - info.start).abs() < 1e-3);
                     if !same {
                         tracked_start.insert(*pid, info.start);
                         let key_old = tracked.remove(pid);
@@ -144,7 +160,10 @@ impl Sampler {
 
 /// Seconds during which at least one of `procs` was alive.
 pub fn busy_seconds(procs: &[&Seen]) -> f64 {
-    let mut spans: Vec<(f64, f64)> = procs.iter().map(|p| (p.start, p.last_seen.max(p.start))).collect();
+    let mut spans: Vec<(f64, f64)> = procs
+        .iter()
+        .map(|p| (p.start, p.last_seen.max(p.start)))
+        .collect();
     spans.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut total = 0.0;
     let mut cur: Option<(f64, f64)> = None;
@@ -194,7 +213,12 @@ pub fn group_by(procs: &[&Seen], key: impl Fn(&Seen) -> String) -> Vec<Group> {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     for p in procs {
         let k = key(p);
-        let g = groups.entry(k.clone()).or_insert(Group { command: k, count: 0, seconds: 0.0, cpu_s: 0.0 });
+        let g = groups.entry(k.clone()).or_insert(Group {
+            command: k,
+            count: 0,
+            seconds: 0.0,
+            cpu_s: 0.0,
+        });
         g.count += 1;
         g.seconds += p.duration();
         g.cpu_s += p.cpu_s;
@@ -210,7 +234,10 @@ fn list_all() -> HashMap<u32, Info> {
     let mut pids = vec![0i32; 8192];
     // SAFETY: the buffer's size in bytes is passed; the call fills at most that.
     let n = unsafe {
-        libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as i32)
+        libc::proc_listallpids(
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
     };
     if n <= 0 {
         return out;
@@ -222,11 +249,18 @@ fn list_all() -> HashMap<u32, Info> {
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
         // SAFETY: `info` is a proc_bsdinfo of `size` bytes.
-        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+        let got = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
         if got != size {
             continue;
         }
-        let comm: Vec<u8> = info.pbi_comm.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
+        let comm: Vec<u8> = info
+            .pbi_comm
+            .iter()
+            .take_while(|c| **c != 0)
+            .map(|c| *c as u8)
+            .collect();
         out.insert(
             pid as u32,
             Info {
@@ -245,11 +279,27 @@ fn args_of(pid: u32) -> Option<Vec<String>> {
     let mut size: libc::size_t = 0;
     // SAFETY: a size query, then a read into a buffer of that size.
     unsafe {
-        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) != 0 {
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
             return None;
         }
         let mut buf = vec![0u8; size];
-        if libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) != 0 {
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
             return None;
         }
         buf.truncate(size);
@@ -278,7 +328,15 @@ fn cpu_of(pid: u32) -> Option<f64> {
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
     // SAFETY: `info` is a proc_taskinfo of `size` bytes.
-    let got = unsafe { libc::proc_pidinfo(pid as i32, libc::PROC_PIDTASKINFO, 0, (&raw mut info).cast(), size) };
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
     if got != size {
         return None;
     }
@@ -304,17 +362,34 @@ fn list_all() -> HashMap<u32, Info> {
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     let boot = std::fs::read_to_string("/proc/stat")
         .ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with("btime")).and_then(|l| l[6..].trim().parse::<f64>().ok()))
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("btime"))
+                .and_then(|l| l[6..].trim().parse::<f64>().ok())
+        })
         .unwrap_or(0.0);
-    let Ok(dir) = std::fs::read_dir("/proc") else { return out };
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for e in dir.flatten() {
-        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
-        let (Some(l), Some(r)) = (stat.find('('), stat.rfind(')')) else { continue };
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let (Some(l), Some(r)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
         let comm = stat[l + 1..r].to_string();
         let fields: Vec<&str> = stat[r + 2..].split_whitespace().collect();
         let ppid = fields.get(1).and_then(|f| f.parse().ok()).unwrap_or(0);
-        let start = fields.get(19).and_then(|f| f.parse::<f64>().ok()).unwrap_or(0.0) / ticks + boot;
+        let start = fields
+            .get(19)
+            .and_then(|f| f.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            / ticks
+            + boot;
         out.insert(pid, Info { ppid, start, comm });
     }
     out
@@ -323,7 +398,12 @@ fn list_all() -> HashMap<u32, Info> {
 #[cfg(target_os = "linux")]
 fn args_of(pid: u32) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    Some(raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "linux")]

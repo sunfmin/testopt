@@ -24,7 +24,12 @@ impl SourceFile {
         let masked = mask(&raw);
         let mut line_starts = vec![0];
         line_starts.extend(raw.match_indices('\n').map(|(i, _)| i + 1));
-        Some(SourceFile { path: path.to_path_buf(), raw, masked, line_starts })
+        Some(SourceFile {
+            path: path.to_path_buf(),
+            raw,
+            masked,
+            line_starts,
+        })
     }
 
     /// 1-based line of byte offset `pos`.
@@ -37,7 +42,11 @@ impl SourceFile {
 
     pub fn line_text(&self, line: usize) -> &str {
         let start = self.line_starts[line - 1];
-        let end = self.line_starts.get(line).map(|e| e - 1).unwrap_or(self.raw.len());
+        let end = self
+            .line_starts
+            .get(line)
+            .map(|e| e - 1)
+            .unwrap_or(self.raw.len());
         &self.raw[start..end]
     }
 }
@@ -95,8 +104,13 @@ pub fn mask(src: &str) -> String {
                     i += 1;
                     continue;
                 }
-                let close: String = std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
-                let end = src[j + 1..].find(&close).map(|e| j + 1 + e).unwrap_or(b.len());
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let end = src[j + 1..]
+                    .find(&close)
+                    .map(|e| j + 1 + e)
+                    .unwrap_or(b.len());
                 blank(&mut out, j + 1, end);
                 i = end + close.len();
             }
@@ -114,7 +128,10 @@ pub fn mask(src: &str) -> String {
             b'\'' => {
                 // A char literal ('x', '\n', '\u{..}') or a lifetime ('a).
                 if b.get(i + 1) == Some(&b'\\') {
-                    let end = src[i + 2..].find('\'').map(|e| i + 2 + e).unwrap_or(b.len());
+                    let end = src[i + 2..]
+                        .find('\'')
+                        .map(|e| i + 2 + e)
+                        .unwrap_or(b.len());
                     blank(&mut out, i + 1, end);
                     i = end + 1;
                 } else if b.get(i + 2) == Some(&b'\'') {
@@ -237,8 +254,15 @@ fn functions(fi: usize, f: &SourceFile) -> Vec<FnDef> {
             j += 1;
         }
         let Some(open) = open else { continue };
-        let Some(close) = matching(m, open) else { continue };
-        out.push(FnDef { file: fi, name: name.to_string(), line: f.line_of(name_start), body: (open, close + 1) });
+        let Some(close) = matching(m, open) else {
+            continue;
+        };
+        out.push(FnDef {
+            file: fi,
+            name: name.to_string(),
+            line: f.line_of(name_start),
+            body: (open, close + 1),
+        });
     }
     out
 }
@@ -262,10 +286,53 @@ pub fn matching(m: &[u8], open: usize) -> Option<usize> {
 }
 
 const NOT_HELPERS: &[&str] = &[
-    "if", "while", "for", "match", "loop", "return", "fn", "let", "Some", "Ok", "Err", "None", "new", "unwrap",
-    "expect", "clone", "into", "to_string", "as_str", "iter", "map", "collect", "join", "push", "len", "format",
-    "assert", "assert_eq", "assert_ne", "println", "eprintln", "vec", "default", "from", "to_owned", "is_empty",
-    "contains", "get", "insert", "unwrap_or", "and_then", "filter", "any", "all", "write", "read", "main",
+    "if",
+    "while",
+    "for",
+    "match",
+    "loop",
+    "return",
+    "fn",
+    "let",
+    "Some",
+    "Ok",
+    "Err",
+    "None",
+    "new",
+    "unwrap",
+    "expect",
+    "clone",
+    "into",
+    "to_string",
+    "as_str",
+    "iter",
+    "map",
+    "collect",
+    "join",
+    "push",
+    "len",
+    "format",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "println",
+    "eprintln",
+    "vec",
+    "default",
+    "from",
+    "to_owned",
+    "is_empty",
+    "contains",
+    "get",
+    "insert",
+    "unwrap_or",
+    "and_then",
+    "filter",
+    "any",
+    "all",
+    "write",
+    "read",
+    "main",
 ];
 
 /// The names called in `text` (`name(`, `.name(`, `path::name(`).
@@ -333,7 +400,13 @@ pub struct Scan {
 pub fn scan(ws: &Workspace, id: &TestId, depth: usize) -> Option<Scan> {
     let sources = Sources::of(&ws.sources_of(&id.binary_id));
     let test = sources.test_fn(id)?.clone();
-    let at = |d: &FnDef| format!("{}:{}", ws.relative(&sources.files[d.file].path).display(), d.line);
+    let at = |d: &FnDef| {
+        format!(
+            "{}:{}",
+            ws.relative(&sources.files[d.file].path).display(),
+            d.line
+        )
+    };
     // Breadth-first through calls; each function read once, with the path
     // that first reached it and how many call sites reach it.
     let mut seen: HashSet<(usize, usize)> = HashSet::new();
@@ -361,9 +434,14 @@ pub fn scan(ws: &Workspace, id: &TestId, depth: usize) -> Option<Scan> {
             *counts.entry(name).or_default() += 1;
         }
         for (name, n) in counts {
-            let Some(defs) = sources.fns.get(&name) else { continue };
+            let Some(defs) = sources.fns.get(&name) else {
+                continue;
+            };
             // Same file first, then the first defined elsewhere.
-            let target = defs.iter().find(|x| x.file == def.file && x.body != def.body).or_else(|| defs.first());
+            let target = defs
+                .iter()
+                .find(|x| x.file == def.file && x.body != def.body)
+                .or_else(|| defs.first());
             if let Some(t) = target
                 && t.body != def.body
             {
@@ -379,7 +457,10 @@ pub fn scan(ws: &Workspace, id: &TestId, depth: usize) -> Option<Scan> {
         let (via, times) = reach[&(def.file, def.body.0)].clone();
         let f = &sources.files[def.file];
         let found = waits_in(f, def.body);
-        if found.iter().any(|w| w.in_loop && (w.kind == "sleep" || w.kind == "shell-sleep")) {
+        if found
+            .iter()
+            .any(|w| w.in_loop && (w.kind == "sleep" || w.kind == "shell-sleep"))
+        {
             polls.push(format!("{} ({})", def.name, at(def)));
         }
         for mut w in found {
@@ -394,7 +475,13 @@ pub fn scan(ws: &Workspace, id: &TestId, depth: usize) -> Option<Scan> {
         .filter(|w| !w.in_loop && (w.kind == "sleep" || w.kind == "shell-sleep"))
         .filter_map(|w| w.seconds.map(|s| s * w.reached as f64))
         .sum();
-    Some(Scan { test_at: at(&test), functions_read: order.len(), waits, fixed_wait_s, polls })
+    Some(Scan {
+        test_at: at(&test),
+        functions_read: order.len(),
+        waits,
+        fixed_wait_s,
+        polls,
+    })
 }
 
 /// Waits written in `f` between byte offsets `body`.
@@ -423,12 +510,17 @@ fn waits_in(f: &SourceFile, body: (usize, usize)) -> Vec<Wait> {
         };
         if masked.contains("sleep(") {
             push("sleep", duration_in(raw));
-        } else if masked.contains("recv_timeout(") || masked.contains("park_timeout(") || masked.contains("wait_timeout(")
+        } else if masked.contains("recv_timeout(")
+            || masked.contains("park_timeout(")
+            || masked.contains("wait_timeout(")
         {
             push("timeout-wait", duration_in(raw));
         } else if let Some(s) = shell_sleep(raw, masked) {
             push("shell-sleep", Some(s));
-        } else if let Some(s) = limit_in(masked) {
+        } else if let Some(s) = limit_in(masked).or_else(|| limit_in(raw)) {
+            // In code, or in a config the test writes as a string
+            // (`"gate_seconds: 20"`).
+
             push("limit", Some(s));
         }
     }
@@ -449,7 +541,10 @@ fn inside_loop(f: &SourceFile, pos: usize, body: (usize, usize)) -> (bool, bool)
             b'}' => depth += 1,
             b'{' if depth > 0 => depth -= 1,
             b'{' => {
-                let start = f.masked[..k].rfind([';', '{', '}']).map(|s| s + 1).unwrap_or(0);
+                let start = f.masked[..k]
+                    .rfind([';', '{', '}'])
+                    .map(|s| s + 1)
+                    .unwrap_or(0);
                 let header = f.masked[start..k].trim();
                 // A label (`'outer: loop`) comes before the keyword.
                 let header = match header.strip_prefix('\'').and_then(|h| h.split_once(':')) {
@@ -483,7 +578,10 @@ pub fn duration_in(line: &str) -> Option<f64> {
     ] {
         if let Some(i) = line.find(pat) {
             let rest = &line[i + pat.len()..];
-            let num: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_').collect();
+            let num: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_')
+                .collect();
             if let Ok(v) = num.replace('_', "").parse::<f64>() {
                 return Some(v * scale);
             }
@@ -503,7 +601,10 @@ fn shell_sleep(raw: &str, masked: &str) -> Option<f64> {
         if masked.as_bytes().get(at) != Some(&b' ') || (at > 0 && is_ident(rb[at - 1])) {
             continue;
         }
-        let num: String = raw[at + 6..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let num: String = raw[at + 6..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         if let Ok(v) = num.parse::<f64>() {
             return Some(v);
         }
@@ -518,16 +619,22 @@ fn limit_in(masked: &str) -> Option<f64> {
     for key in ["_seconds", "_secs", "timeout", "_ms", "deadline", "_limit"] {
         let Some(i) = lower.find(key) else { continue };
         let rest = lower[i + key.len()..].trim_start();
-        let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')).unwrap_or(rest).trim_start();
+        let rest = rest
+            .strip_prefix(':')
+            .or_else(|| rest.strip_prefix('='))
+            .unwrap_or(rest)
+            .trim_start();
         if let Some(d) = duration_in(rest) {
             return Some(d);
         }
-        let num: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let num: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         if let Ok(v) = num.parse::<f64>() {
             return Some(if key == "_ms" { v / 1000.0 } else { v });
         }
     }
-    // A limit written in a config string: `gate_seconds: 20` in a literal.
     None
 }
 
@@ -545,7 +652,9 @@ pub fn test_code_lines(f: &SourceFile) -> Vec<(usize, usize)> {
             if m[at] != b'#' {
                 continue; // inside a comment or string
             }
-            let Some(open) = f.masked[at..].find('{').map(|o| at + o) else { continue };
+            let Some(open) = f.masked[at..].find('{').map(|o| at + o) else {
+                continue;
+            };
             // A `;` before the `{` is `#[cfg(test)] use ...;` or `mod x;`.
             if f.masked[at..open].contains(';') {
                 continue;
@@ -573,11 +682,24 @@ mod tests {
 
     #[test]
     fn durations() {
-        assert_eq!(duration_in("std::thread::sleep(Duration::from_secs(21));"), Some(21.0));
-        assert_eq!(duration_in("sleep(Duration::from_millis(1_500))"), Some(1.5));
+        assert_eq!(
+            duration_in("std::thread::sleep(Duration::from_secs(21));"),
+            Some(21.0)
+        );
+        assert_eq!(
+            duration_in("sleep(Duration::from_millis(1_500))"),
+            Some(1.5)
+        );
         assert_eq!(duration_in("sleep(t)"), None);
         assert_eq!(limit_in("    gate_seconds: 20,"), Some(20.0));
-        assert_eq!(limit_in("let timeout = Duration::from_secs(30);"), Some(30.0));
+        assert_eq!(
+            limit_in(r#"world.set(&format!("gate_command: {g}\ngate_seconds: 20"));"#),
+            Some(20.0)
+        );
+        assert_eq!(
+            limit_in("let timeout = Duration::from_secs(30);"),
+            Some(30.0)
+        );
     }
 
     #[test]
@@ -592,7 +714,10 @@ mod tests {
         )
         .unwrap();
         let s = Sources::of(&[p]);
-        let id = TestId { binary_id: "x".into(), name: "t".into() };
+        let id = TestId {
+            binary_id: "x".into(),
+            name: "t".into(),
+        };
         let t = s.test_fn(&id).unwrap();
         assert_eq!(t.line, 2);
         let f = &s.files[0];

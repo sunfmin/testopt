@@ -45,7 +45,10 @@ pub struct TestTime {
 
 impl TestTime {
     pub fn id(&self) -> TestId {
-        TestId { binary_id: self.binary_id.clone(), name: self.name.clone() }
+        TestId {
+            binary_id: self.binary_id.clone(),
+            name: self.name.clone(),
+        }
     }
 }
 
@@ -53,7 +56,8 @@ impl TestTime {
 /// afkconvoy's gate.sh builds its slow gate's: `#` comments and blank lines
 /// skipped; each line becomes `(binary_id(=B) & test(=N))`, or-ed.
 pub fn filter_from_file(path: &Path) -> Result<String> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut parts = vec![];
     for line in text.lines() {
         let t = line.trim();
@@ -61,11 +65,18 @@ pub fn filter_from_file(path: &Path) -> Result<String> {
             continue;
         }
         let Some((binary, name)) = t.split_once(char::is_whitespace) else {
-            bail!("{}: line `{t}` is not `<binary-id> <test name>`", path.display());
+            bail!(
+                "{}: line `{t}` is not `<binary-id> <test name>`",
+                path.display()
+            );
         };
         parts.push(format!("(binary_id(={binary}) & test(={}))", name.trim()));
     }
-    Ok(if parts.is_empty() { "none()".into() } else { parts.join(" | ") })
+    Ok(if parts.is_empty() {
+        "none()".into()
+    } else {
+        parts.join(" | ")
+    })
 }
 
 /// The tests nextest runs at once under `profile`: an explicit count, else
@@ -76,7 +87,10 @@ pub fn threads(ws: &Workspace, profile: &str, explicit: Option<usize>) -> usize 
         return n;
     }
     let cores = crate::host::cores();
-    if let Some(n) = std::env::var("NEXTEST_TEST_THREADS").ok().and_then(|v| parse_threads(&v, cores)) {
+    if let Some(n) = std::env::var("NEXTEST_TEST_THREADS")
+        .ok()
+        .and_then(|v| parse_threads(&v, cores))
+    {
         return n;
     }
     let parsed = match profile_setting(ws, profile, &["test-threads"]) {
@@ -90,8 +104,9 @@ pub fn threads(ws: &Workspace, profile: &str, explicit: Option<usize>) -> usize 
 /// A setting of `profile` in the repo's `.config/nextest.toml`, following
 /// `inherits` and then `default`, as nextest does.
 fn profile_setting(ws: &Workspace, profile: &str, path: &[&str]) -> Option<toml::Value> {
-    let config: toml::Table =
-        std::fs::read_to_string(ws.root.join(".config/nextest.toml")).ok().and_then(|t| t.parse().ok())?;
+    let config: toml::Table = std::fs::read_to_string(ws.root.join(".config/nextest.toml"))
+        .ok()
+        .and_then(|t| t.parse().ok())?;
     let profiles = config.get("profile")?.as_table()?;
     let mut name = profile.to_string();
     for _ in 0..8 {
@@ -137,8 +152,9 @@ fn parse_threads(v: &str, cores: usize) -> Option<usize> {
 /// Where nextest keeps its output for this workspace: its `[store] dir`,
 /// default `target/nextest` under the workspace root.
 fn nextest_store(ws: &Workspace) -> PathBuf {
-    let config: Option<toml::Table> =
-        std::fs::read_to_string(ws.root.join(".config/nextest.toml")).ok().and_then(|t| t.parse().ok());
+    let config: Option<toml::Table> = std::fs::read_to_string(ws.root.join(".config/nextest.toml"))
+        .ok()
+        .and_then(|t| t.parse().ok());
     let dir = config
         .as_ref()
         .and_then(|c| c.get("store"))
@@ -225,7 +241,12 @@ impl Running {
         if tests.is_empty() && !status.success() {
             bail!("nextest failed before running any test (exit {status}); see its log");
         }
-        Ok(Outcome { tests, success: status.success(), wall_s, summary })
+        Ok(Outcome {
+            tests,
+            success: status.success(),
+            wall_s,
+            summary,
+        })
     }
 }
 
@@ -237,20 +258,36 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
     // on, in a file named for this process so concurrent runs do not share
     // one. Where the repo already writes JUnit for that profile, its file is
     // the one read.
-    let profile = if spec.profile.is_empty() { "default" } else { &spec.profile };
+    let profile = if spec.profile.is_empty() {
+        "default"
+    } else {
+        &spec.profile
+    };
     let tool_dir = std::env::temp_dir().join(format!("testopt-tool-{}", std::process::id()));
     std::fs::create_dir_all(&tool_dir)?;
     let tool_config = tool_dir.join("nextest.toml");
     let own_name = format!("testopt-{}.xml", std::process::id());
-    std::fs::write(&tool_config, format!("[profile.\"{profile}\".junit]\npath = \"{own_name}\"\n"))?;
-    let repo_junit = profile_setting(ws, profile, &["junit", "path"]).and_then(|v| v.as_str().map(str::to_string));
+    std::fs::write(
+        &tool_config,
+        format!("[profile.\"{profile}\".junit]\npath = \"{own_name}\"\n"),
+    )?;
+    let repo_junit = profile_setting(ws, profile, &["junit", "path"])
+        .and_then(|v| v.as_str().map(str::to_string));
     let owned = repo_junit.is_none();
-    let junit = nextest_store(ws).join(profile).join(repo_junit.unwrap_or(own_name));
+    let junit = nextest_store(ws)
+        .join(profile)
+        .join(repo_junit.unwrap_or(own_name));
     let _ = std::fs::remove_file(&junit);
 
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&ws.root)
-        .args(["nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"])
+        .args([
+            "nextest",
+            "run",
+            "--workspace",
+            "--no-fail-fast",
+            "--no-tests=pass",
+        ])
         .arg("--tool-config-file")
         .arg(format!("testopt:{}", tool_config.display()))
         .args(["--profile", profile]);
@@ -264,13 +301,22 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().context("starting cargo nextest (is cargo-nextest installed?)")?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .context("starting cargo nextest (is cargo-nextest installed?)")?;
     let started = Instant::now();
 
     let progress = Arc::new(Mutex::new(Progress::default()));
     let log = match &spec.log {
-        Some(p) => Some(Arc::new(Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(p)?))),
+        Some(p) => Some(Arc::new(Mutex::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)?,
+        ))),
         None => None,
     };
     // stdout is copied to the log as it comes; stderr carries the progress.
@@ -302,7 +348,10 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
             if let Some((word, done, total)) = status_line(t) {
                 p.done = p.done.max(done);
                 p.total = p.total.max(total);
-                if matches!(word, "FAIL" | "TIMEOUT" | "SIGSEGV" | "SIGABRT" | "SIGKILL" | "ABORT" | "LEAK-FAIL") {
+                if matches!(
+                    word,
+                    "FAIL" | "TIMEOUT" | "SIGSEGV" | "SIGABRT" | "SIGKILL" | "ABORT" | "LEAK-FAIL"
+                ) {
                     p.failed += 1;
                 }
                 p.last = t.to_string();
@@ -320,7 +369,16 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
         }
         summary
     });
-    Ok(Running { child, started, junit, owned_junit: owned, tool_dir, reader, progress, progress_path })
+    Ok(Running {
+        child,
+        started,
+        junit,
+        owned_junit: owned,
+        tool_dir,
+        reader,
+        progress,
+        progress_path,
+    })
 }
 
 pub fn run(ws: &Workspace, spec: &Spec) -> Result<Outcome> {
@@ -360,7 +418,11 @@ pub fn parse_junit(xml: &str) -> Result<Vec<TestTime>> {
     let mut in_case = false;
     loop {
         let event = reader.read_event()?;
-        let event_kind = if matches!(event, Event::Start(_)) { Kind::Start } else { Kind::Other };
+        let event_kind = if matches!(event, Event::Start(_)) {
+            Kind::Start
+        } else {
+            Kind::Other
+        };
         match event {
             Event::Start(ref e) | Event::Empty(ref e) if e.name().as_ref() == b"testcase" => {
                 let has_children = matches!(event_kind, Kind::Start);
@@ -376,7 +438,12 @@ pub fn parse_junit(xml: &str) -> Result<Vec<TestTime>> {
                         _ => {}
                     }
                 }
-                out.push(TestTime { binary_id: class, name, seconds: time, status: "pass".into() });
+                out.push(TestTime {
+                    binary_id: class,
+                    name,
+                    seconds: time,
+                    status: "pass".into(),
+                });
                 in_case = has_children;
             }
             Event::Start(e) | Event::Empty(e) if in_case => {
@@ -407,14 +474,18 @@ pub struct Listed {
 /// `cargo nextest list` of `filter` (building what it needs), matching tests only.
 pub fn list(ws: &Workspace, filter: Option<&str>, env: &[(String, String)]) -> Result<Vec<Listed>> {
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(&ws.root).args(["nextest", "list", "--workspace", "--message-format", "json"]);
+    cmd.current_dir(&ws.root)
+        .args(["nextest", "list", "--workspace", "--message-format", "json"]);
     if let Some(f) = filter {
         cmd.args(["-E", f]);
     }
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.stderr(Stdio::inherit()).output().context("running cargo nextest list")?;
+    let out = cmd
+        .stderr(Stdio::inherit())
+        .output()
+        .context("running cargo nextest list")?;
     if !out.status.success() {
         bail!("cargo nextest list failed (exit {})", out.status);
     }
@@ -424,7 +495,13 @@ pub fn list(ws: &Workspace, filter: Option<&str>, env: &[(String, String)]) -> R
         let path = PathBuf::from(suite["binary-path"].as_str().unwrap_or_default());
         for (name, case) in suite["testcases"].as_object().into_iter().flatten() {
             if case["filter-match"]["status"] == "matches" {
-                tests.push(Listed { id: TestId { binary_id: bid.clone(), name: name.clone() }, binary_path: path.clone() });
+                tests.push(Listed {
+                    id: TestId {
+                        binary_id: bid.clone(),
+                        name: name.clone(),
+                    },
+                    binary_path: path.clone(),
+                });
             }
         }
     }
@@ -438,10 +515,19 @@ mod tests {
 
     #[test]
     fn reads_nextest_status_lines() {
-        assert_eq!(status_line("PASS [   1.270s] (4/5) fixture::it spawns"), Some(("PASS", 4, 5)));
-        assert_eq!(status_line("LEAK-FAIL [ 0.1s] (1/9) a b"), Some(("LEAK-FAIL", 1, 9)));
+        assert_eq!(
+            status_line("PASS [   1.270s] (4/5) fixture::it spawns"),
+            Some(("PASS", 4, 5))
+        );
+        assert_eq!(
+            status_line("LEAK-FAIL [ 0.1s] (1/9) a b"),
+            Some(("LEAK-FAIL", 1, 9))
+        );
         assert_eq!(status_line("Summary [ 1.5s] 5 tests run"), None);
-        assert_eq!(starting_total("Starting 991 tests across 9 binaries"), Some(991));
+        assert_eq!(
+            starting_total("Starting 991 tests across 9 binaries"),
+            Some(991)
+        );
     }
 
     #[test]
@@ -453,7 +539,10 @@ mod tests {
         </testsuite></testsuites>"#;
         let t = parse_junit(xml).unwrap();
         assert_eq!(t.len(), 3);
-        assert_eq!((t[0].name.as_str(), t[0].seconds, t[0].status.as_str()), ("x::y", 1.5, "pass"));
+        assert_eq!(
+            (t[0].name.as_str(), t[0].seconds, t[0].status.as_str()),
+            ("x::y", 1.5, "pass")
+        );
         assert_eq!(t[1].status, "fail");
         assert_eq!(t[2].status, "pass");
     }

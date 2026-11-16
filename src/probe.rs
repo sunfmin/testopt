@@ -19,25 +19,41 @@ use crate::workspace::{Workspace, commit};
 pub fn resolve(ws: &Workspace, store: &Store, query: &str) -> Result<TestId> {
     let query = query.trim();
     if let Some((b, n)) = query.split_once(' ') {
-        return Ok(TestId { binary_id: b.to_string(), name: n.trim().to_string() });
+        return Ok(TestId {
+            binary_id: b.to_string(),
+            name: n.trim().to_string(),
+        });
     }
     let matches = |name: &str| name == query || name.ends_with(&format!("::{query}"));
     let runs: Vec<Run> = store.read("runs.jsonl")?;
     if let Some(run) = runs.last() {
-        let found: Vec<TestId> = run.tests.iter().filter(|t| matches(&t.name)).map(|t| t.id()).collect();
+        let found: Vec<TestId> = run
+            .tests
+            .iter()
+            .filter(|t| matches(&t.name))
+            .map(|t| t.id())
+            .collect();
         if found.len() == 1 {
             return Ok(found[0].clone());
         }
     }
     let listed = nextest::list(ws, None, &[])?;
-    let found: Vec<TestId> = listed.into_iter().map(|l| l.id).filter(|id| matches(&id.name)).collect();
+    let found: Vec<TestId> = listed
+        .into_iter()
+        .map(|l| l.id)
+        .filter(|id| matches(&id.name))
+        .collect();
     match found.len() {
         1 => Ok(found[0].clone()),
         0 => bail!("no test named `{query}`"),
         _ => bail!(
             "`{query}` names {} tests; give `<binary-id> <name>`: {}",
             found.len(),
-            found.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ")
+            found
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -52,10 +68,23 @@ fn build_for(ws: &Workspace, id: &TestId, env: &[(String, String)]) -> Result<()
 }
 
 fn alone(profile: &str, id: &TestId, env: &[(String, String)]) -> Spec {
-    Spec { profile: profile.to_string(), filter: Some(id.filter()), threads: Some(1), env: env.to_vec(), ..Default::default() }
+    Spec {
+        profile: profile.to_string(),
+        filter: Some(id.filter()),
+        threads: Some(1),
+        env: env.to_vec(),
+        ..Default::default()
+    }
 }
 
-pub fn why(ws: &Workspace, store: &Store, query: &str, profile: &str, interval_ms: u64, depth: usize) -> Result<Value> {
+pub fn why(
+    ws: &Workspace,
+    store: &Store,
+    query: &str,
+    profile: &str,
+    interval_ms: u64,
+    depth: usize,
+) -> Result<Value> {
     let id = resolve(ws, store, query)?;
     let scan = source::scan(ws, &id, depth);
     build_for(ws, &id, &[])?;
@@ -65,7 +94,11 @@ pub fn why(ws: &Workspace, store: &Store, query: &str, profile: &str, interval_m
     let out = running.wait()?;
     let (seen, samples) = sampler.finish();
     let load_end = Load::now();
-    let Some(t) = out.tests.iter().find(|t| t.name == id.name && t.binary_id == id.binary_id) else {
+    let Some(t) = out
+        .tests
+        .iter()
+        .find(|t| t.name == id.name && t.binary_id == id.binary_id)
+    else {
         bail!("nextest ran no test {id}");
     };
     let wall = t.seconds;
@@ -87,14 +120,36 @@ pub fn why(ws: &Workspace, store: &Store, query: &str, profile: &str, interval_m
     let mut longest: Vec<&&Seen> = spawned.iter().collect();
     longest.sort_by(|a, b| b.duration().total_cmp(&a.duration()));
     let t0 = test_proc.map(|p| p.start).unwrap_or(0.0);
-    let first_spawn = spawned.iter().map(|p| p.start).fold(f64::INFINITY, f64::min);
+    let first_spawn = spawned
+        .iter()
+        .map(|p| p.start)
+        .fold(f64::INFINITY, f64::min);
 
-    let fixed = scan.as_ref().map(|s| s.fixed_wait_s).unwrap_or(0.0);
+    // Fixed waits the run can have spent: a sleep outside a loop no longer
+    // than the test itself (a longer one was cut short, e.g. by a limit),
+    // times the call sites reaching it; and a limit the test ran up to — one
+    // from half to all of its time is one it waited out.
+    let all_waits = scan.as_ref().map(|s| s.waits.clone()).unwrap_or_default();
+    let mut cited = vec![];
+    let mut fixed = 0.0;
+    for w in &all_waits {
+        let Some(s) = w.seconds else { continue };
+        let total = s * w.reached as f64;
+        let is_sleep = (w.kind == "sleep" || w.kind == "shell-sleep") && !w.in_loop;
+        if is_sleep && s >= 0.05 && total <= wall * 1.05 {
+            fixed += total;
+            cited.push(json!({"at": w.at, "seconds": round(total), "code": w.code, "why": "sleep outside a loop"}));
+        } else if w.kind == "limit" && s >= 0.5 * wall && s <= wall * 1.05 {
+            fixed += s;
+            cited.push(json!({"at": w.at, "seconds": round(s), "code": w.code, "why": "a limit the test ran up to"}));
+        }
+    }
+    let fixed = fixed.min(wall);
     let polls = scan.as_ref().map(|s| s.polls.len()).unwrap_or(0);
     let mut kinds = vec![];
     if fixed >= 0.25 * wall && fixed >= 0.5 {
-        kinds.push(json!({"kind": "fixed-wait", "seconds": round(fixed.min(wall)),
-            "evidence": "sleeps outside loops, from the source, times the call sites reaching them"}));
+        kinds.push(json!({"kind": "fixed-wait", "seconds": round(fixed), "cited": cited,
+            "evidence": "from the source: sleeps outside loops no longer than the test, and limits it ran up to"}));
     }
     if spawned.len() >= 20 || (in_children >= 0.5 * wall && !spawned.is_empty()) {
         kinds.push(json!({"kind": "process-heavy", "seconds": round(in_children), "processes": spawned.len(),
@@ -107,7 +162,11 @@ pub fn why(ws: &Workspace, store: &Store, query: &str, profile: &str, interval_m
     if test_cpu >= 0.5 * wall {
         kinds.push(json!({"kind": "cpu", "seconds": round(test_cpu), "evidence": "the test process's own CPU time"}));
     }
-    let setup = if first_spawn.is_finite() { (first_spawn - t0).max(0.0) } else { 0.0 };
+    let setup = if first_spawn.is_finite() {
+        (first_spawn - t0).max(0.0)
+    } else {
+        0.0
+    };
     if kinds.is_empty() {
         kinds.push(json!({"kind": "setup-or-other", "seconds": round(wall)}));
     }
@@ -192,7 +251,11 @@ pub fn median(xs: &[f64]) -> f64 {
         return f64::NAN;
     }
     let m = v.len() / 2;
-    if v.len() % 2 == 1 { v[m] } else { (v[m - 1] + v[m]) / 2.0 }
+    if v.len() % 2 == 1 {
+        v[m]
+    } else {
+        (v[m - 1] + v[m]) / 2.0
+    }
 }
 
 /// Runs `id` alone `n` times; loads are read before and after each.
@@ -212,13 +275,22 @@ pub fn time_runs(
         loads.push(Load::now().load1);
         let out = nextest::run(ws, &alone(profile, id, env))?;
         loads.push(Load::now().load1);
-        let Some(t) = out.tests.iter().find(|t| t.name == id.name && t.binary_id == id.binary_id) else {
+        let Some(t) = out
+            .tests
+            .iter()
+            .find(|t| t.name == id.name && t.binary_id == id.binary_id)
+        else {
             bail!("nextest ran no test {id}");
         };
         if t.status == "fail" {
             bail!("{id} failed on run {}", i + 1);
         }
-        eprintln!("[testopt] {id}: run {}/{n}: {:.3}s (load {:.1})", i + 1, t.seconds, loads[loads.len() - 1]);
+        eprintln!(
+            "[testopt] {id}: run {}/{n}: {:.3}s (load {:.1})",
+            i + 1,
+            t.seconds,
+            loads[loads.len() - 1]
+        );
         runs.push(t.seconds);
     }
     let min = runs.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -244,7 +316,14 @@ pub fn time_runs(
     })
 }
 
-pub fn time(ws: &Workspace, store: &Store, query: &str, profile: &str, n: usize, threshold: f64) -> Result<Value> {
+pub fn time(
+    ws: &Workspace,
+    store: &Store,
+    query: &str,
+    profile: &str,
+    n: usize,
+    threshold: f64,
+) -> Result<Value> {
     let id = resolve(ws, store, query)?;
     let before = Load::now();
     if before.per_core() > threshold * 2.0 {

@@ -44,8 +44,14 @@ pub fn count(l: &Lines) -> usize {
 /// The runner: called by nextest as `testopt __cov-runner <binary> <args>`.
 pub fn runner(args: &[String]) -> ! {
     let raw = std::env::var("TESTOPT_COV_RAW").unwrap_or_else(|_| ".".into());
-    let key = match (std::env::var("NEXTEST_TEST_PHASE").as_deref(), std::env::var("NEXTEST_TEST_NAME")) {
-        (Ok("run"), Ok(name)) => test_key(&std::env::var("NEXTEST_BINARY_ID").unwrap_or_default(), &name),
+    let key = match (
+        std::env::var("NEXTEST_TEST_PHASE").as_deref(),
+        std::env::var("NEXTEST_TEST_NAME"),
+    ) {
+        (Ok("run"), Ok(name)) => test_key(
+            &std::env::var("NEXTEST_BINARY_ID").unwrap_or_default(),
+            &name,
+        ),
         _ => "_list".to_string(),
     };
     let dir = Path::new(&raw).join(&key);
@@ -62,7 +68,10 @@ pub fn runner(args: &[String]) -> ! {
         );
     }
     use std::os::unix::process::CommandExt;
-    let err = Command::new(&args[0]).args(&args[1..]).env("LLVM_PROFILE_FILE", dir.join("%p-%m.profraw")).exec();
+    let err = Command::new(&args[0])
+        .args(&args[1..])
+        .env("LLVM_PROFILE_FILE", dir.join("%p-%m.profraw"))
+        .exec();
     eprintln!("testopt __cov-runner: exec {}: {err}", args[0]);
     std::process::exit(127)
 }
@@ -81,7 +90,9 @@ pub fn tree_key(ws: &Workspace) -> String {
     files.dedup();
     let mut h = 0xcbf29ce484222325u64;
     for f in files {
-        let Ok(bytes) = std::fs::read(&f) else { continue };
+        let Ok(bytes) = std::fs::read(&f) else {
+            continue;
+        };
         h ^= fnv(ws.relative(&f).to_string_lossy().as_bytes());
         h = h.wrapping_mul(0x100000001b3) ^ fnv(&bytes);
     }
@@ -91,15 +102,28 @@ pub fn tree_key(ws: &Workspace) -> String {
 fn host_triple() -> Result<String> {
     let out = Command::new("rustc").arg("-vV").output()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    text.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string).context("rustc -vV names no host")
+    text.lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(str::to_string)
+        .context("rustc -vV names no host")
 }
 
 fn llvm_tool(ws: &Workspace, tool: &str) -> Result<PathBuf> {
-    let out = Command::new("rustc").args(["--print", "sysroot"]).current_dir(&ws.root).output()?;
+    let out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .current_dir(&ws.root)
+        .output()?;
     let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let p = Path::new(&sysroot).join("lib/rustlib").join(host_triple()?).join("bin").join(tool);
+    let p = Path::new(&sysroot)
+        .join("lib/rustlib")
+        .join(host_triple()?)
+        .join("bin")
+        .join(tool);
     if !p.exists() {
-        bail!("{} not found: `rustup component add llvm-tools` for this toolchain", p.display());
+        bail!(
+            "{} not found: `rustup component add llvm-tools` for this toolchain",
+            p.display()
+        );
     }
     Ok(p)
 }
@@ -115,12 +139,19 @@ fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<Vec<(String, String)>> {
         .output()
         .context("running cargo llvm-cov (is cargo-llvm-cov installed?)")?;
     if !out.status.success() {
-        bail!("cargo llvm-cov show-env failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "cargo llvm-cov show-env failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let mut env = vec![];
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some(rest) = line.strip_prefix("export ") else { continue };
-        let Some((k, v)) = rest.split_once('=') else { continue };
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        let Some((k, v)) = rest.split_once('=') else {
+            continue;
+        };
         env.push((k.to_string(), unquote(v)));
     }
     env.retain(|(k, _)| k != "LLVM_PROFILE_FILE");
@@ -167,20 +198,31 @@ pub fn collect(
     let cache = cache_dir(store, &tree);
     std::fs::create_dir_all(&cache)?;
     let env = cov_env(ws, cov_target)?;
-    note(&format!("coverage: listing tests (instrumented build into {})", cov_target.display()));
+    note(&format!(
+        "coverage: listing tests (instrumented build into {})",
+        cov_target.display()
+    ));
     let listed = nextest::list(ws, filter, &env)?;
     let mut have: HashMap<TestId, Covered> = HashMap::new();
     let mut missing = vec![];
     for l in &listed {
         let f = cache.join(format!("{}.json", test_key(&l.id.binary_id, &l.id.name)));
-        match std::fs::read(&f).ok().and_then(|b| serde_json::from_slice::<Covered>(&b).ok()) {
+        match std::fs::read(&f)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Covered>(&b).ok())
+        {
             Some(c) => {
                 have.insert(l.id.clone(), c);
             }
             None => missing.push(l.clone()),
         }
     }
-    note(&format!("coverage: {} tests, {} cached, {} to run (tree {tree})", listed.len(), have.len(), missing.len()));
+    note(&format!(
+        "coverage: {} tests, {} cached, {} to run (tree {tree})",
+        listed.len(),
+        have.len(),
+        missing.len()
+    ));
     if missing.is_empty() {
         return Ok(have);
     }
@@ -190,15 +232,36 @@ pub fn collect(
     let exe = std::env::current_exe()?;
     let triple = host_triple()?.to_uppercase().replace('-', "_");
     let mut run_env = env.clone();
-    run_env.push((format!("CARGO_TARGET_{triple}_RUNNER"), format!("{} __cov-runner", exe.display())));
+    run_env.push((
+        format!("CARGO_TARGET_{triple}_RUNNER"),
+        format!("{} __cov-runner", exe.display()),
+    ));
     run_env.push(("TESTOPT_COV_RAW".into(), raw.display().to_string()));
-    let filter = missing.iter().map(|l| format!("({})", l.id.filter())).collect::<Vec<_>>().join(" | ");
+    let filter = missing
+        .iter()
+        .map(|l| format!("({})", l.id.filter()))
+        .collect::<Vec<_>>()
+        .join(" | ");
     let out = nextest::run(
         ws,
-        &Spec { profile: profile.to_string(), filter: Some(filter), env: run_env, log: Some(raw.join("nextest.log")), ..Default::default() },
+        &Spec {
+            profile: profile.to_string(),
+            filter: Some(filter),
+            env: run_env,
+            log: Some(raw.join("nextest.log")),
+            ..Default::default()
+        },
     )?;
-    let status: HashMap<TestId, String> = out.tests.iter().map(|t| (t.id(), t.status.clone())).collect();
-    note(&format!("coverage: ran {} tests in {:.1}s; exporting each test's lines", out.tests.len(), out.wall_s));
+    let status: HashMap<TestId, String> = out
+        .tests
+        .iter()
+        .map(|t| (t.id(), t.status.clone()))
+        .collect();
+    note(&format!(
+        "coverage: ran {} tests in {:.1}s; exporting each test's lines",
+        out.tests.len(),
+        out.wall_s
+    ));
 
     let profdata = llvm_tool(ws, "llvm-profdata")?;
     let llvm_cov = llvm_tool(ws, "llvm-cov")?;
@@ -225,7 +288,15 @@ pub fn collect(
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(l) = jobs.get(i) else { break };
                     let dir = raw.join(test_key(&l.id.binary_id, &l.id.name));
-                    let r = export_one(&dir, &profdata, &llvm_cov, &l.binary_path, &bins, ws, &test_files);
+                    let r = export_one(
+                        &dir,
+                        &profdata,
+                        &llvm_cov,
+                        &l.binary_path,
+                        &bins,
+                        ws,
+                        &test_files,
+                    );
                     results.lock().unwrap().push((l.id.clone(), r));
                 }
             });
@@ -233,8 +304,16 @@ pub fn collect(
     });
     for (id, r) in results.into_inner().unwrap() {
         let lines = r.with_context(|| format!("coverage of {id}"))?;
-        let c = Covered { test: id.clone(), tree: tree.clone(), status: status.get(&id).cloned().unwrap_or("missing".into()), lines };
-        write_json(&cache.join(format!("{}.json", test_key(&id.binary_id, &id.name))), &c)?;
+        let c = Covered {
+            test: id.clone(),
+            tree: tree.clone(),
+            status: status.get(&id).cloned().unwrap_or("missing".into()),
+            lines,
+        };
+        write_json(
+            &cache.join(format!("{}.json", test_key(&id.binary_id, &id.name))),
+            &c,
+        )?;
         have.insert(id, c);
     }
     let _ = std::fs::remove_dir_all(&raw);
@@ -251,15 +330,27 @@ fn export_one(
     test_code: &TestCode,
 ) -> Result<Lines> {
     let raws: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "profraw")).collect())
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "profraw"))
+                .collect()
+        })
         .unwrap_or_default();
     if raws.is_empty() {
         return Ok(Lines::new());
     }
     let merged = dir.join("merged.profdata");
-    let st = Command::new(profdata).args(["merge", "-sparse", "-o"]).arg(&merged).args(&raws).output()?;
+    let st = Command::new(profdata)
+        .args(["merge", "-sparse", "-o"])
+        .arg(&merged)
+        .args(&raws)
+        .output()?;
     if !st.status.success() {
-        bail!("llvm-profdata merge: {}", String::from_utf8_lossy(&st.stderr));
+        bail!(
+            "llvm-profdata merge: {}",
+            String::from_utf8_lossy(&st.stderr)
+        );
     }
     let mut cmd = Command::new(llvm_cov);
     cmd.args(["export", "-format=lcov", "-skip-functions"])
@@ -273,7 +364,11 @@ fn export_one(
     if !out.status.success() {
         bail!("llvm-cov export: {}", String::from_utf8_lossy(&out.stderr));
     }
-    Ok(parse_lcov(&String::from_utf8_lossy(&out.stdout), ws, test_code))
+    Ok(parse_lcov(
+        &String::from_utf8_lossy(&out.stdout),
+        ws,
+        test_code,
+    ))
 }
 
 /// Which lines of the workspace are test code.
@@ -284,18 +379,30 @@ pub struct TestCode {
 
 impl TestCode {
     pub fn new(ws: &Workspace) -> TestCode {
-        TestCode { root: ws.root.clone(), ranges: Default::default() }
+        TestCode {
+            root: ws.root.clone(),
+            ranges: Default::default(),
+        }
     }
 
     pub fn is_test(&self, rel: &str, line: u32) -> bool {
-        if Path::new(rel).components().any(|c| matches!(c.as_os_str().to_str(), Some("tests" | "benches" | "examples"))) {
+        if Path::new(rel).components().any(|c| {
+            matches!(
+                c.as_os_str().to_str(),
+                Some("tests" | "benches" | "examples")
+            )
+        }) {
             return true;
         }
         let mut cache = self.ranges.lock().unwrap();
         let ranges = cache.entry(rel.to_string()).or_insert_with(|| {
-            SourceFile::load(&self.root.join(rel)).map(|f| test_code_lines(&f)).unwrap_or_default()
+            SourceFile::load(&self.root.join(rel))
+                .map(|f| test_code_lines(&f))
+                .unwrap_or_default()
         });
-        ranges.iter().any(|(a, b)| (*a..=*b).contains(&(line as usize)))
+        ranges
+            .iter()
+            .any(|(a, b)| (*a..=*b).contains(&(line as usize)))
     }
 }
 
@@ -305,12 +412,19 @@ pub fn parse_lcov(text: &str, ws: &Workspace, test_code: &TestCode) -> Lines {
     for line in text.lines() {
         if let Some(f) = line.strip_prefix("SF:") {
             let p = Path::new(f);
-            file = p.strip_prefix(&ws.root).ok().map(|r| r.display().to_string());
+            file = p
+                .strip_prefix(&ws.root)
+                .ok()
+                .map(|r| r.display().to_string());
         } else if let Some(da) = line.strip_prefix("DA:") {
             let Some(f) = &file else { continue };
             let mut parts = da.split(',');
-            let (Some(l), Some(c)) = (parts.next(), parts.next()) else { continue };
-            let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u64>()) else { continue };
+            let (Some(l), Some(c)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u64>()) else {
+                continue;
+            };
             if c > 0 && !test_code.is_test(f, l) {
                 out.entry(f.clone()).or_default().insert(l);
             }
@@ -323,7 +437,9 @@ pub fn parse_lcov(text: &str, ws: &Workspace, test_code: &TestCode) -> Lines {
 }
 
 fn intersect(a: &Lines, b: &Lines) -> usize {
-    a.iter().map(|(f, la)| b.get(f).map(|lb| la.intersection(lb).count()).unwrap_or(0)).sum()
+    a.iter()
+        .map(|(f, la)| b.get(f).map(|lb| la.intersection(lb).count()).unwrap_or(0))
+        .sum()
 }
 
 fn minus(a: &Lines, b: &Lines) -> Lines {
@@ -350,7 +466,11 @@ fn sample(l: &Lines, n: usize) -> Vec<String> {
             while it.peek().is_some_and(|&&n| n == b + 1) {
                 b = *it.next().unwrap();
             }
-            out.push(if a == b { format!("{f}:{a}") } else { format!("{f}:{a}-{b}") });
+            out.push(if a == b {
+                format!("{f}:{a}")
+            } else {
+                format!("{f}:{a}-{b}")
+            });
             if out.len() >= n {
                 return out;
             }
@@ -364,7 +484,13 @@ pub fn cov_target(ws: &Workspace) -> PathBuf {
 }
 
 /// `covers <test>`: the test's lines, and every other measured test's overlap.
-pub fn covers(ws: &Workspace, store: &Store, id: &TestId, against: Option<&str>, profile: &str) -> Result<Value> {
+pub fn covers(
+    ws: &Workspace,
+    store: &Store,
+    id: &TestId,
+    against: Option<&str>,
+    profile: &str,
+) -> Result<Value> {
     let filter = match against {
         Some(a) => format!("({}) | ({a})", id.filter()),
         None => id.filter(),
@@ -375,11 +501,16 @@ pub fn covers(ws: &Workspace, store: &Store, id: &TestId, against: Option<&str>,
     // Any other test measured on this same tree counts too.
     let cache = cache_dir(store, &tree_key(ws));
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
-        if let Some(c) = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<Covered>(&b).ok()) {
+        if let Some(c) = std::fs::read(e.path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Covered>(&b).ok())
+        {
             all.entry(c.test.clone()).or_insert(c);
         }
     }
-    let Some(me) = all.get(id).cloned() else { bail!("no coverage measured for {id}") };
+    let Some(me) = all.get(id).cloned() else {
+        bail!("no coverage measured for {id}")
+    };
     let mine = &me.lines;
     let n = count(mine);
     let mut others = vec![];
@@ -407,8 +538,10 @@ pub fn covers(ws: &Workspace, store: &Store, id: &TestId, against: Option<&str>,
     }
     others.sort_by(|a, b| b["shared"].as_u64().cmp(&a["shared"].as_u64()));
     let unique = minus(mine, &union_others);
-    let by_file: Vec<Value> =
-        mine.iter().map(|(f, ls)| json!({"file": f, "lines": ls.len()})).collect();
+    let by_file: Vec<Value> = mine
+        .iter()
+        .map(|(f, ls)| json!({"file": f, "lines": ls.len()}))
+        .collect();
     Ok(json!({
         "test": id.to_string(),
         "status": me.status,
@@ -437,7 +570,15 @@ impl LineMap {
     /// From `git diff <base>` in `root` (the working tree against base).
     pub fn from_git(root: &Path, base: &str) -> Result<LineMap> {
         let out = Command::new("git")
-            .args(["diff", "--no-ext-diff", "--no-color", "-U0", "-M", base, "--"])
+            .args([
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "-U0",
+                "-M",
+                base,
+                "--",
+            ])
             .current_dir(root)
             .output()?;
         if !out.status.success() {
@@ -468,7 +609,9 @@ impl LineMap {
             } else if let Some(h) = line.strip_prefix("@@ ") {
                 let Some(o) = &old else { continue };
                 let mut parts = h.split_whitespace();
-                let (Some(a), Some(b)) = (parts.next(), parts.next()) else { continue };
+                let (Some(a), Some(b)) = (parts.next(), parts.next()) else {
+                    continue;
+                };
                 let range = |s: &str| -> (u32, u32) {
                     let s = &s[1..];
                     match s.split_once(',') {
@@ -481,7 +624,11 @@ impl LineMap {
                 hunks.entry(o.clone()).or_default().push((bs, bl, hs, hl));
             }
         }
-        LineMap { hunks, deleted_files, renamed }
+        LineMap {
+            hunks,
+            deleted_files,
+            renamed,
+        }
     }
 
     /// The head file and line of base `file:line`, if the diff kept it.
@@ -489,11 +636,19 @@ impl LineMap {
         if self.deleted_files.contains(file) {
             return None;
         }
-        let head_file = self.renamed.get(file).cloned().unwrap_or_else(|| file.to_string());
+        let head_file = self
+            .renamed
+            .get(file)
+            .cloned()
+            .unwrap_or_else(|| file.to_string());
         let mut shift: i64 = 0;
         for &(bs, bl, _hs, hl) in self.hunks.get(file).map(|v| v.as_slice()).unwrap_or(&[]) {
             // With -U0, a pure insertion has bl == 0 and sits after line bs.
-            let (lo, hi) = if bl == 0 { (bs + 1, bs) } else { (bs, bs + bl - 1) };
+            let (lo, hi) = if bl == 0 {
+                (bs + 1, bs)
+            } else {
+                (bs, bs + bl - 1)
+            };
             if bl > 0 && line >= lo && line <= hi {
                 return None;
             }
@@ -514,11 +669,21 @@ fn base_tree(store: &Store, root: &Path, commit: &str) -> Result<PathBuf> {
     }
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let archive = Command::new("git").args(["archive", "--format=tar", commit]).current_dir(root).output()?;
+    let archive = Command::new("git")
+        .args(["archive", "--format=tar", commit])
+        .current_dir(root)
+        .output()?;
     if !archive.status.success() {
-        bail!("git archive {commit}: {}", String::from_utf8_lossy(&archive.stderr));
+        bail!(
+            "git archive {commit}: {}",
+            String::from_utf8_lossy(&archive.stderr)
+        );
     }
-    let mut tar = Command::new("tar").args(["-x", "-f", "-", "-C"]).arg(&dir).stdin(std::process::Stdio::piped()).spawn()?;
+    let mut tar = Command::new("tar")
+        .args(["-x", "-f", "-", "-C"])
+        .arg(&dir)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
     std::io::Write::write_all(tar.stdin.as_mut().unwrap(), &archive.stdout)?;
     drop(tar.stdin.take());
     if !tar.wait()?.success() {
@@ -550,7 +715,10 @@ pub struct CheckOpts<'a> {
 /// test covered at base, and still in the code, is covered by none now.
 pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) -> Result<Value> {
     let started = std::time::Instant::now();
-    let rev = Command::new("git").args(["rev-parse", "--verify", &format!("{}^{{commit}}", o.base)]).current_dir(&ws.root).output()?;
+    let rev = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("{}^{{commit}}", o.base)])
+        .current_dir(&ws.root)
+        .output()?;
     if !rev.status.success() {
         bail!("{} is not a commit here", o.base);
     }
@@ -559,9 +727,15 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     // The base copy sits in the store; its paths say where the workspace
     // root is within it.
     let rel_root = {
-        let top = Command::new("git").args(["rev-parse", "--show-toplevel"]).current_dir(&ws.root).output()?;
+        let top = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&ws.root)
+            .output()?;
         let top = PathBuf::from(String::from_utf8_lossy(&top.stdout).trim());
-        ws.root.strip_prefix(&top).map(Path::to_path_buf).unwrap_or_default()
+        ws.root
+            .strip_prefix(&top)
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
     };
     let base_ws = Workspace::find(&base_dir.join(&rel_root))?;
     // The base builds into target dirs of its own: cargo names a workspace
@@ -570,21 +744,37 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     let cov = cov_target(ws);
     let cov_base = ws.target_dir.join("testopt-cov-base");
     let plain_base = ws.target_dir.join("testopt-base");
-    note(&format!("check: base {commit} copied to {}", base_ws.root.display()));
-    let base_cov = collect(&base_ws, store, o.filter.as_deref(), o.profile, &cov_base, note)?;
+    note(&format!(
+        "check: base {commit} copied to {}",
+        base_ws.root.display()
+    ));
+    let base_cov = collect(
+        &base_ws,
+        store,
+        o.filter.as_deref(),
+        o.profile,
+        &cov_base,
+        note,
+    )?;
     note("check: base coverage done; now the working tree");
     let head_cov = collect(ws, store, o.filter.as_deref(), o.profile, &cov, note)?;
     let base_u = union(&base_cov);
     let head_u = union(&head_cov);
     let map = LineMap::from_git(&ws.root, &commit)?;
     let prefix = |f: &str| -> String {
-        if rel_root.as_os_str().is_empty() { f.to_string() } else { format!("{}/{f}", rel_root.display()) }
+        if rel_root.as_os_str().is_empty() {
+            f.to_string()
+        } else {
+            format!("{}/{f}", rel_root.display())
+        }
     };
     let unprefix = |f: &str| -> String {
         if rel_root.as_os_str().is_empty() {
             f.to_string()
         } else {
-            f.strip_prefix(&format!("{}/", rel_root.display())).unwrap_or(f).to_string()
+            f.strip_prefix(&format!("{}/", rel_root.display()))
+                .unwrap_or(f)
+                .to_string()
         }
     };
     let mut lost = Lines::new();
@@ -609,8 +799,11 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
             if let Some((hf, hl)) = map.map(&prefix(f), l)
                 && lost.get(&unprefix(&hf)).is_some_and(|s| s.contains(&hl))
             {
-                let by: Vec<String> =
-                    base_cov.values().filter(|c| c.lines.get(f).is_some_and(|s| s.contains(&l))).map(|c| c.test.to_string()).collect();
+                let by: Vec<String> = base_cov
+                    .values()
+                    .filter(|c| c.lines.get(f).is_some_and(|s| s.contains(&l)))
+                    .map(|c| c.test.to_string())
+                    .collect();
                 if lost_detail.len() < 30 {
                     lost_detail.push(json!({"at": format!("{}:{hl}", unprefix(&hf)), "base_at": format!("{f}:{l}"), "covered_at_base_by": by}));
                 }
@@ -627,14 +820,24 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     let mut base_src: HashMap<String, Sources> = HashMap::new();
     let mut head_src: HashMap<String, Sources> = HashMap::new();
     for id in base_tests.intersection(&head_tests) {
-        let b = base_src.entry(id.binary_id.clone()).or_insert_with(|| Sources::of(&base_ws.sources_of(&id.binary_id)));
-        let h = head_src.entry(id.binary_id.clone()).or_insert_with(|| Sources::of(&ws.sources_of(&id.binary_id)));
-        let body = |s: &Sources| s.test_fn(id).map(|d| s.files[d.file].raw[d.body.0..d.body.1].to_string());
+        let b = base_src
+            .entry(id.binary_id.clone())
+            .or_insert_with(|| Sources::of(&base_ws.sources_of(&id.binary_id)));
+        let h = head_src
+            .entry(id.binary_id.clone())
+            .or_insert_with(|| Sources::of(&ws.sources_of(&id.binary_id)));
+        let body = |s: &Sources| {
+            s.test_fn(id)
+                .map(|d| s.files[d.file].raw[d.body.0..d.body.1].to_string())
+        };
         if body(b) != body(h) {
             changed.push(id.clone());
         }
     }
-    let plain_base_env = vec![("CARGO_TARGET_DIR".to_string(), plain_base.display().to_string())];
+    let plain_base_env = vec![(
+        "CARGO_TARGET_DIR".to_string(),
+        plain_base.display().to_string(),
+    )];
     let times_of = |w: &Workspace, env: &[(String, String)], id: &TestId| -> Option<Value> {
         crate::probe::time_runs(w, o.profile, id, o.runs, o.threshold, env)
             .map(|t| json!({"median_s": t.median_s, "spread_s": t.spread_s, "runs": t.runs, "reliable": t.reliable, "max_load_per_core": t.max_load_per_core}))
@@ -643,11 +846,15 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     };
     let mut timed = vec![];
     for id in &changed {
-        note(&format!("check: timing changed test {id}, base then working tree"));
+        note(&format!(
+            "check: timing changed test {id}, base then working tree"
+        ));
         let before = times_of(&base_ws, &plain_base_env, id);
         let after = times_of(ws, &[], id);
         let delta = match (&before, &after) {
-            (Some(b), Some(a)) => Some(round(a["median_s"].as_f64().unwrap_or(0.0) - b["median_s"].as_f64().unwrap_or(0.0))),
+            (Some(b), Some(a)) => Some(round(
+                a["median_s"].as_f64().unwrap_or(0.0) - b["median_s"].as_f64().unwrap_or(0.0),
+            )),
             _ => None,
         };
         timed.push(json!({"test": id.to_string(), "change": "changed", "base": before, "head": after, "delta_s": delta}));
@@ -655,13 +862,17 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     for id in &deleted {
         note(&format!("check: timing deleted test {id} at base"));
         let before = times_of(&base_ws, &plain_base_env, id);
-        let delta = before.as_ref().map(|b| round(-b["median_s"].as_f64().unwrap_or(0.0)));
+        let delta = before
+            .as_ref()
+            .map(|b| round(-b["median_s"].as_f64().unwrap_or(0.0)));
         timed.push(json!({"test": id.to_string(), "change": "deleted", "base": before, "head": null, "delta_s": delta}));
     }
     for id in &added {
         note(&format!("check: timing new test {id}"));
         let after = times_of(ws, &[], id);
-        let delta = after.as_ref().map(|a| round(a["median_s"].as_f64().unwrap_or(0.0)));
+        let delta = after
+            .as_ref()
+            .map(|a| round(a["median_s"].as_f64().unwrap_or(0.0)));
         timed.push(json!({"test": id.to_string(), "change": "added", "base": null, "head": after, "delta_s": delta}));
     }
     let total_delta: f64 = timed.iter().filter_map(|t| t["delta_s"].as_f64()).sum();

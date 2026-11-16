@@ -38,7 +38,11 @@ pub struct Run {
 
 impl Run {
     pub fn test_seconds(&self) -> f64 {
-        self.tests.iter().filter(|t| t.status != "skip").map(|t| t.seconds).sum()
+        self.tests
+            .iter()
+            .filter(|t| t.status != "skip")
+            .map(|t| t.seconds)
+            .sum()
     }
 }
 
@@ -123,8 +127,12 @@ pub fn record(
         tests: out.tests,
     };
     store.append("runs.jsonl", &run)?;
-    let failed: Vec<String> =
-        run.tests.iter().filter(|t| t.status == "fail").map(|t| format!("{} {}", t.binary_id, t.name)).collect();
+    let failed: Vec<String> = run
+        .tests
+        .iter()
+        .filter(|t| t.status == "fail")
+        .map(|t| format!("{} {}", t.binary_id, t.name))
+        .collect();
     Ok(json!({
         "run": run.id,
         "store": store.dir.join("runs.jsonl"),
@@ -151,15 +159,25 @@ pub struct Locator<'a> {
 
 impl<'a> Locator<'a> {
     pub fn new(ws: &'a Workspace) -> Self {
-        Locator { ws, by_binary: HashMap::new() }
+        Locator {
+            ws,
+            by_binary: HashMap::new(),
+        }
     }
 
     pub fn locate(&mut self, t: &nextest::TestId) -> Option<(String, usize)> {
         let ws = self.ws;
-        let sources =
-            self.by_binary.entry(t.binary_id.clone()).or_insert_with(|| Sources::of(&ws.sources_of(&t.binary_id)));
+        let sources = self
+            .by_binary
+            .entry(t.binary_id.clone())
+            .or_insert_with(|| Sources::of(&ws.sources_of(&t.binary_id)));
         let d = sources.test_fn(t)?;
-        Some((ws.relative(&sources.files[d.file].path).display().to_string(), d.line))
+        Some((
+            ws.relative(&sources.files[d.file].path)
+                .display()
+                .to_string(),
+            d.line,
+        ))
     }
 }
 
@@ -186,9 +204,16 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
     let mut loc = Locator::new(ws);
 
     let mut bands = vec![];
-    for (label, lo, hi) in [("≥20s", 20.0, f64::INFINITY), ("10–20s", 10.0, 20.0), ("2–10s", 2.0, 10.0), ("<2s", 0.0, 2.0)]
-    {
-        let inb: Vec<&&TestTime> = tests.iter().filter(|t| t.seconds >= lo && t.seconds < hi).collect();
+    for (label, lo, hi) in [
+        ("≥20s", 20.0, f64::INFINITY),
+        ("10–20s", 10.0, 20.0),
+        ("2–10s", 2.0, 10.0),
+        ("<2s", 0.0, 2.0),
+    ] {
+        let inb: Vec<&&TestTime> = tests
+            .iter()
+            .filter(|t| t.seconds >= lo && t.seconds < hi)
+            .collect();
         let secs: f64 = inb.iter().map(|t| t.seconds).sum();
         bands.push(json!({"band": label, "tests": inb.len(), "seconds": round(secs), "share": round(secs / total.max(1e-9))}));
     }
@@ -197,7 +222,10 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
     let mut ranked = vec![];
     for (i, t) in tests.iter().enumerate() {
         let at = loc.locate(&t.id());
-        let file = at.as_ref().map(|a| a.0.clone()).unwrap_or_else(|| format!("({})", t.binary_id));
+        let file = at
+            .as_ref()
+            .map(|a| a.0.clone())
+            .unwrap_or_else(|| format!("({})", t.binary_id));
         let e = files.entry(file).or_default();
         e.0 += 1;
         e.1 += t.seconds;
@@ -223,7 +251,12 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
             json!({"file": f, "tests": n, "seconds": round(s), "share": round(s / total.max(1e-9)), "est_wall_saving_s": round(s / threads)})
         })
         .collect();
-    by_file.sort_by(|a, b| b["seconds"].as_f64().unwrap_or(0.0).total_cmp(&a["seconds"].as_f64().unwrap_or(0.0)));
+    by_file.sort_by(|a, b| {
+        b["seconds"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&a["seconds"].as_f64().unwrap_or(0.0))
+    });
 
     let trend: Vec<Value> = runs
         .iter()

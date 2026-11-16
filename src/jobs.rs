@@ -31,7 +31,11 @@ impl Job {
     pub fn open(store: &Store, id: &str) -> Result<Job> {
         let dir = store.jobs_dir().join(id);
         std::fs::create_dir_all(&dir)?;
-        Ok(Job { id: id.to_string(), dir, quiet: false })
+        Ok(Job {
+            id: id.to_string(),
+            dir,
+            quiet: false,
+        })
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -45,7 +49,11 @@ impl Job {
     }
 
     pub fn note(&self, msg: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.log_path()) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.log_path())
+        {
             let _ = writeln!(f, "[testopt] {msg}");
         }
         if !self.quiet {
@@ -64,7 +72,11 @@ impl Job {
 
 /// The newest job directory, by name (ids start with a timestamp).
 pub fn latest(store: &Store) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(store.jobs_dir()).ok()?.flatten().map(|e| e.path()).collect();
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(store.jobs_dir())
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
     dirs.sort();
     dirs.pop()
 }
@@ -76,7 +88,10 @@ fn shell_quote(s: &str) -> String {
 /// The tmux session this process runs inside, if any.
 pub fn own_session() -> Option<String> {
     std::env::var_os("TMUX")?;
-    let out = Command::new("tmux").args(["display-message", "-p", "#S"]).output().ok()?;
+    let out = Command::new("tmux")
+        .args(["display-message", "-p", "#S"])
+        .output()
+        .ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
 }
@@ -98,7 +113,9 @@ pub fn guard_session(session: &str) -> Result<()> {
 /// Kills the job session `session`, never the one this process runs in.
 pub fn kill_session(session: &str) -> Result<serde_json::Value> {
     guard_session(session)?;
-    let st = Command::new("tmux").args(["kill-session", "-t", &format!("={session}")]).output()?;
+    let st = Command::new("tmux")
+        .args(["kill-session", "-t", &format!("={session}")])
+        .output()?;
     Ok(serde_json::json!({"session": session, "killed": st.status.success()}))
 }
 
@@ -106,7 +123,13 @@ pub fn kill_session(session: &str) -> Result<serde_json::Value> {
 /// tmux session `session` (making it, with its `dash` window, if there is
 /// none), and returns the job directory to wait on. Refuses when `session`
 /// is the session this process runs in.
-pub fn start_in_tmux(store: &Store, ws_root: &Path, session: &str, kind: &str, args: &[String]) -> Result<Job> {
+pub fn start_in_tmux(
+    store: &Store,
+    ws_root: &Path,
+    session: &str,
+    kind: &str,
+    args: &[String],
+) -> Result<Job> {
     guard_session(session)?;
     let id = new_id(kind);
     let job = Job::open(store, &id)?;
@@ -120,15 +143,26 @@ pub fn start_in_tmux(store: &Store, ws_root: &Path, session: &str, kind: &str, a
     }
     std::fs::write(job.dir.join("env.sh"), env)?;
     let exe = std::env::current_exe()?;
-    let mut cmd = vec![shell_quote(&exe.to_string_lossy()), "--job".into(), shell_quote(&id)];
-    cmd.extend(args.iter().filter(|a| *a != "--tmux").map(|a| shell_quote(a)));
+    let mut cmd = vec![
+        shell_quote(&exe.to_string_lossy()),
+        "--job".into(),
+        shell_quote(&id),
+    ];
+    cmd.extend(
+        args.iter()
+            .filter(|a| *a != "--tmux")
+            .map(|a| shell_quote(a)),
+    );
     let script = format!(
         ". {}; cd {}; {}; echo; echo \"[testopt] job {id} ended (exit $?); press enter to close\"; read _",
         shell_quote(&job.dir.join("env.sh").to_string_lossy()),
         shell_quote(&ws_root.to_string_lossy()),
         cmd.join(" ")
     );
-    let has = Command::new("tmux").args(["has-session", "-t", &format!("={session}")]).output().context("running tmux")?;
+    let has = Command::new("tmux")
+        .args(["has-session", "-t", &format!("={session}")])
+        .output()
+        .context("running tmux")?;
     if !has.status.success() {
         let dash = format!(
             ". {}; cd {}; {} dash",
@@ -137,14 +171,38 @@ pub fn start_in_tmux(store: &Store, ws_root: &Path, session: &str, kind: &str, a
             shell_quote(&exe.to_string_lossy())
         );
         let st = Command::new("tmux")
-            .args(["new-session", "-d", "-s", session, "-n", "dash", "-x", "160", "-y", "48", "sh", "-c", &dash])
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-n",
+                "dash",
+                "-x",
+                "160",
+                "-y",
+                "48",
+                "sh",
+                "-c",
+                &dash,
+            ])
             .status()?;
         if !st.success() {
             bail!("tmux new-session failed");
         }
     }
     let st = Command::new("tmux")
-        .args(["new-window", "-d", "-t", &format!("={session}:"), "-n", &format!("run-{id}"), "sh", "-c", &script])
+        .args([
+            "new-window",
+            "-d",
+            "-t",
+            &format!("={session}:"),
+            "-n",
+            &format!("run-{id}"),
+            "sh",
+            "-c",
+            &script,
+        ])
         .status()?;
     if !st.success() {
         bail!("tmux new-window failed");
@@ -164,7 +222,10 @@ pub fn wait(job_dir: &Path, timeout: Duration) -> Result<Value> {
             if v["ok"] == true {
                 return Ok(v["result"].clone());
             }
-            bail!("job failed: {}", v["error"].as_str().unwrap_or("unknown error"));
+            bail!(
+                "job failed: {}",
+                v["error"].as_str().unwrap_or("unknown error")
+            );
         }
         if began.elapsed() > timeout {
             bail!(

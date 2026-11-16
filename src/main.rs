@@ -26,7 +26,11 @@ use store::Store;
 use workspace::Workspace;
 
 #[derive(Parser)]
-#[command(name = "testopt", version, about = "Find where a cargo-nextest suite's time goes")]
+#[command(
+    name = "testopt",
+    version,
+    about = "Find where a cargo-nextest suite's time goes"
+)]
 struct Cli {
     /// The target workspace (any directory in it).
     #[arg(short = 'C', long = "workspace", global = true, default_value = ".")]
@@ -200,7 +204,11 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
     let store = Store::of(&ws)?;
     let long = matches!(cli.cmd, Cmd::Record { .. } | Cmd::Check { .. });
     if cli.tmux && long {
-        let kind = if matches!(cli.cmd, Cmd::Record { .. }) { "record" } else { "check" };
+        let kind = if matches!(cli.cmd, Cmd::Record { .. }) {
+            "record"
+        } else {
+            "check"
+        };
         let job = jobs::start_in_tmux(&store, &ws.root, &cli.tmux_session, kind, raw_args)?;
         eprintln!(
             "[testopt] job {} started in tmux window {}:run-{}; waiting on {}",
@@ -210,37 +218,92 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
             job.result_path().display()
         );
         if cli.detach {
-            return Ok((serde_json::json!({"job": job.id, "result": job.result_path()}), 0));
+            return Ok((
+                serde_json::json!({"job": job.id, "result": job.result_path()}),
+                0,
+            ));
         }
         let v = jobs::wait(&job.dir, Duration::from_secs(cli.wait_timeout))?;
-        let code = if kind == "check" && v["pass"] == false { 1 } else { 0 };
+        let code = if kind == "check" && v["pass"] == false {
+            1
+        } else {
+            0
+        };
         return Ok((v, code));
     }
     match cli.cmd {
-        Cmd::Record { filter_file, expr, profile, test_threads, extra } => {
-            let job = jobs::Job::open(&store, &cli.job.clone().unwrap_or_else(|| jobs::new_id("record")))?;
+        Cmd::Record {
+            filter_file,
+            expr,
+            profile,
+            test_threads,
+            extra,
+        } => {
+            let job = jobs::Job::open(
+                &store,
+                &cli.job.clone().unwrap_or_else(|| jobs::new_id("record")),
+            )?;
             let sel = Selection { filter_file, expr };
             let r = record::record(&ws, &store, &sel, &profile, test_threads, extra, &job);
             job.finish(&r)?;
             Ok((r?, 0))
         }
         Cmd::Rank { top, run } => Ok((record::rank(&ws, &store, top, run.as_deref())?, 0)),
-        Cmd::Why { test, profile, interval_ms, depth } => {
-            Ok((probe::why(&ws, &store, &test, &profile, interval_ms, depth)?, 0))
-        }
-        Cmd::Time { test, n, profile, max_load_per_core, strict } => {
+        Cmd::Why {
+            test,
+            profile,
+            interval_ms,
+            depth,
+        } => Ok((
+            probe::why(&ws, &store, &test, &profile, interval_ms, depth)?,
+            0,
+        )),
+        Cmd::Time {
+            test,
+            n,
+            profile,
+            max_load_per_core,
+            strict,
+        } => {
             let v = probe::time(&ws, &store, &test, &profile, n, max_load_per_core)?;
-            let code = if strict && v["reliable"] == false { 3 } else { 0 };
+            let code = if strict && v["reliable"] == false {
+                3
+            } else {
+                0
+            };
             Ok((v, code))
         }
-        Cmd::Covers { test, against, profile } => {
+        Cmd::Covers {
+            test,
+            against,
+            profile,
+        } => {
             let id = probe::resolve(&ws, &store, &test)?;
-            Ok((coverage::covers(&ws, &store, &id, against.as_deref(), &profile)?, 0))
+            Ok((
+                coverage::covers(&ws, &store, &id, against.as_deref(), &profile)?,
+                0,
+            ))
         }
-        Cmd::Check { base, filter_file, expr, profile, n, max_load_per_core } => {
-            let job = jobs::Job::open(&store, &cli.job.clone().unwrap_or_else(|| jobs::new_id("check")))?;
+        Cmd::Check {
+            base,
+            filter_file,
+            expr,
+            profile,
+            n,
+            max_load_per_core,
+        } => {
+            let job = jobs::Job::open(
+                &store,
+                &cli.job.clone().unwrap_or_else(|| jobs::new_id("check")),
+            )?;
             let sel = Selection { filter_file, expr };
-            let opts = coverage::CheckOpts { base: &base, filter: sel.filter()?, profile: &profile, runs: n, threshold: max_load_per_core };
+            let opts = coverage::CheckOpts {
+                base: &base,
+                filter: sel.filter()?,
+                profile: &profile,
+                runs: n,
+                threshold: max_load_per_core,
+            };
             let r = coverage::check(&ws, &store, &opts, &|m| job.note(m));
             job.finish(&r)?;
             let v = r?;
@@ -253,8 +316,30 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
         }
         Cmd::Ledger { add, next } => match add {
             None => Ok((ledger::show(&store, next)?, 0)),
-            Some(LedgerCmd::Add { test, kind, status, change, before, after, threads, reason }) => Ok((
-                ledger::add(&ws, &store, ledger::Add { test, kind, status, change, before_s: before, after_s: after, threads, reason })?,
+            Some(LedgerCmd::Add {
+                test,
+                kind,
+                status,
+                change,
+                before,
+                after,
+                threads,
+                reason,
+            }) => Ok((
+                ledger::add(
+                    &ws,
+                    &store,
+                    ledger::Add {
+                        test,
+                        kind,
+                        status,
+                        change,
+                        before_s: before,
+                        after_s: after,
+                        threads,
+                        reason,
+                    },
+                )?,
                 0,
             )),
         },
@@ -265,9 +350,15 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 None => jobs::latest(&store).ok_or_else(|| anyhow::anyhow!("no job yet"))?,
             };
             let read = |f: &str| -> Value {
-                std::fs::read(dir.join(f)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null)
+                std::fs::read(dir.join(f))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(Value::Null)
             };
-            Ok((serde_json::json!({"job": dir, "progress": read("progress.json"), "result": read("result.json")}), 0))
+            Ok((
+                serde_json::json!({"job": dir, "progress": read("progress.json"), "result": read("result.json")}),
+                0,
+            ))
         }
     }
 }

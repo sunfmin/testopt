@@ -17,7 +17,10 @@ impl Load {
         // SAFETY: getloadavg writes at most `nelem` doubles into `avg`.
         let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) };
         let load1 = if n >= 1 { avg[0] } else { f64::NAN };
-        Load { load1, cores: cores() }
+        Load {
+            load1,
+            cores: cores(),
+        }
     }
 
     /// Load per logical CPU: above 1.0 the run queue is longer than the host
@@ -29,7 +32,9 @@ impl Load {
 }
 
 pub fn cores() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 pub fn hostname() -> String {
@@ -44,5 +49,8 @@ pub fn hostname() -> String {
 }
 
 pub fn now_rfc3339() -> String {
-    jiff::Timestamp::now().round(jiff::Unit::Second).unwrap_or(jiff::Timestamp::now()).to_string()
+    jiff::Timestamp::now()
+        .round(jiff::Unit::Second)
+        .unwrap_or(jiff::Timestamp::now())
+        .to_string()
 }

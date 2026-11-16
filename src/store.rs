@@ -99,9 +99,18 @@ pub fn test_key(binary_id: &str, name: &str) -> String {
     let raw = format!("{binary_id}__{name}");
     let mut safe: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(150)
         .collect();
-    safe.push_str(&format!("-{:08x}", crate::workspace::fnv(raw.as_bytes()) as u32));
+    safe.push_str(&format!(
+        "-{:08x}",
+        crate::workspace::fnv(raw.as_bytes()) as u32
+    ));
     safe
 }
