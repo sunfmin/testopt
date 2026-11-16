@@ -7,13 +7,14 @@ never writes to it: its state lives in a store outside the workspace.
 ## Install
 
 ```sh
-cargo install --locked --path .            # this checkout
+brew install sunfmin/tap/testopt         # macOS, Apple Silicon or Intel
+# or, from this checkout: cargo install --locked --path .
 cargo install cargo-nextest --locked       # needed by every command
 cargo install cargo-llvm-cov --version 0.9.1 --locked   # needed by covers / check
 rustup component add llvm-tools            # for the toolchain the target builds with
 ```
 
-Install or update testopt with `cargo install`, which writes a new file. Do
+Install or update testopt with `brew` or `cargo install`, which write a new file. Do
 not `cp` over an installed binary: macOS kills a binary overwritten in place
 the next time it runs. A `--tmux` job runs its own copy of testopt, so a
 rebuild while it runs leaves it alone.
@@ -256,6 +257,21 @@ session.
      test.
 7. **Ledger**: `testopt ledger add --from-check latest --status kept|rejected`.
    Then go to 3.
+
+## Cutting a release
+
+Set the version in `Cargo.toml`, land it on `main`, and push the tag
+`v<version>` at that commit. `.github/workflows/release.yml` then:
+
+- builds both macOS binaries on stable Rust;
+- checks each says `testopt <version>`;
+- makes this repository's release `v<version>` from the archives;
+- pushes `Formula/testopt.rb` to `sunfmin/homebrew-tap`, with the secret
+  `HOMEBREW_TAP_DEPLOY_KEY`: a deploy key that may write the tap.
+
+Every step is `packaging/release.sh`. By hand, at the tag's commit:
+`packaging/release.sh check v<version>`, then `build`, `package` and
+`publish`. Each step can run again.
 
 ## Develop
 
