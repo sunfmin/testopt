@@ -25,5 +25,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y tmux; else brew install tmux; fi
       - run: cargo fmt --check
+      # The release script, which only a tag runs: broken, it fails here first.
+      - run: sh -n packaging/release.sh
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo nextest run --no-fail-fast
