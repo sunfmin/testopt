@@ -5,6 +5,7 @@
 mod coverage;
 mod dash;
 mod env;
+mod hints;
 mod host;
 mod jobs;
 mod ledger;
@@ -14,7 +15,9 @@ mod procs;
 mod record;
 mod schedule;
 mod source;
+mod status;
 mod store;
+mod survey;
 mod workspace;
 
 use anyhow::Result;
@@ -95,6 +98,9 @@ enum Cmd {
         /// How many calls deep to follow helpers for waits.
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        /// Every wait and process, not only those that weigh.
+        #[arg(long)]
+        full: bool,
     },
     /// Run one test alone N times: median, spread and load.
     Time {
@@ -116,6 +122,9 @@ enum Cmd {
         /// Also measure these tests (a nextest filter) to compare with.
         #[arg(long)]
         against: Option<String>,
+        /// Also measure its peers: `file` (tests in its file) or `binary`.
+        #[arg(long)]
+        peers: Option<String>,
         #[arg(long, default_value = "default")]
         profile: String,
     },
@@ -150,6 +159,24 @@ enum Cmd {
         /// How many next candidates to list.
         #[arg(long, default_value_t = 10)]
         next: usize,
+    },
+    /// Where the optimization stands: run, jobs, survey, ledger, and what to
+    /// run next. The first command of a session.
+    Status,
+    /// `why` on the latest run's slowest N tests, one at a time: one table.
+    Survey {
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        #[arg(long, default_value = "default")]
+        profile: String,
+    },
+    /// Wait for a job (the newest without a result, or the one named) and
+    /// print its result.
+    Wait {
+        job: Option<String>,
+        /// Seconds to wait at most.
+        #[arg(long, default_value_t = 3 * 3600)]
+        timeout: u64,
     },
     /// A job's state: the newest, or the one named.
     Job { id: Option<String> },
@@ -207,8 +234,20 @@ fn main() {
         coverage::runner(&args[2..]);
     }
     let cli = Cli::parse();
+    let name = match &cli.cmd {
+        Cmd::Record { .. } => "record",
+        Cmd::Rank { .. } => "rank",
+        Cmd::Why { .. } => "why",
+        Cmd::Time { .. } => "time",
+        Cmd::Covers { .. } => "covers",
+        Cmd::Check { .. } => "check",
+        Cmd::Survey { .. } => "survey",
+        Cmd::Ledger { add: None, .. } => "ledger",
+        _ => "",
+    };
     match run(cli, &args[1..]) {
-        Ok((v, code)) => {
+        Ok((mut v, code)) => {
+            hints::annotate(name, &mut v);
             println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             std::process::exit(code);
         }
@@ -230,12 +269,15 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
     } else {
         ws
     };
-    let long = matches!(cli.cmd, Cmd::Record { .. } | Cmd::Check { .. });
+    let long = matches!(
+        cli.cmd,
+        Cmd::Record { .. } | Cmd::Check { .. } | Cmd::Survey { .. }
+    );
     if cli.tmux && long {
-        let kind = if matches!(cli.cmd, Cmd::Record { .. }) {
-            "record"
-        } else {
-            "check"
+        let kind = match cli.cmd {
+            Cmd::Record { .. } => "record",
+            Cmd::Survey { .. } => "survey",
+            _ => "check",
         };
         let job = jobs::start_in_tmux(&store, &ws.root, &cli.tmux_session, kind, raw_args)?;
         eprintln!(
@@ -282,10 +324,32 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
             profile,
             interval_ms,
             depth,
-        } => Ok((
-            probe::why(&ws, &store, &test, &profile, interval_ms, depth)?,
-            0,
-        )),
+            full,
+        } => {
+            let mut v = probe::why(&ws, &store, &test, &profile, interval_ms, depth)?;
+            if !full {
+                hints::compact_why(&mut v);
+            }
+            Ok((v, 0))
+        }
+        Cmd::Status => Ok((status::status(&ws, &store), 0)),
+        Cmd::Survey { top, profile } => {
+            let job = jobs::Job::open(
+                &store,
+                &cli.job.clone().unwrap_or_else(|| jobs::new_id("survey")),
+            )?;
+            let r = survey::survey(&ws, &store, top, &profile, &job);
+            job.finish(&r)?;
+            Ok((r?, 0))
+        }
+        Cmd::Wait { job, timeout } => {
+            let dir = match job {
+                Some(j) => store.jobs_dir().join(j),
+                None => jobs::unfinished(&store)
+                    .ok_or_else(|| anyhow::anyhow!("no job without a result"))?,
+            };
+            Ok((jobs::wait(&dir, Duration::from_secs(timeout))?, 0))
+        }
         Cmd::Time {
             test,
             n,
@@ -304,11 +368,19 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
         Cmd::Covers {
             test,
             against,
+            peers,
             profile,
         } => {
             let id = probe::resolve(&ws, &store, &test)?;
             Ok((
-                coverage::covers(&ws, &store, &id, against.as_deref(), &profile)?,
+                coverage::covers(
+                    &ws,
+                    &store,
+                    &id,
+                    against.as_deref(),
+                    peers.as_deref(),
+                    &profile,
+                )?,
                 0,
             ))
         }

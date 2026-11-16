@@ -247,3 +247,15 @@ pub fn wait(job_dir: &Path, timeout: Duration) -> Result<Value> {
         std::thread::sleep(Duration::from_millis(500));
     }
 }
+
+/// The newest job without a result.
+pub fn unfinished(store: &Store) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(store.jobs_dir())
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| !d.join("result.json").exists())
+        .collect();
+    dirs.sort();
+    dirs.pop()
+}

@@ -120,7 +120,7 @@ pub fn show(store: &Store, next: usize) -> Result<Value> {
             v["saved_s"] = json!(e.saved_s().map(round));
             v
         }).collect::<Vec<_>>(),
-        "next": upcoming,
+        "candidates": upcoming,
     }))
 }
 

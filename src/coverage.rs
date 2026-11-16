@@ -585,22 +585,39 @@ pub fn covers(
     store: &Store,
     id: &TestId,
     against: Option<&str>,
+    peers: Option<&str>,
     profile: &str,
 ) -> Result<Value> {
-    let filter = match against {
-        Some(a) => format!("({}) | ({a})", id.filter()),
-        None => id.filter(),
+    // `--peers binary`: every test of its binary; `--peers file`: every
+    // test whose function is in its file. Both beside `--against`.
+    let mut filter = id.filter();
+    if let Some(a) = against {
+        filter = format!("({filter}) | ({a})");
+    }
+    if peers == Some("binary") {
+        filter = format!("({filter}) | binary_id(={})", id.binary_id);
+    }
+    let scope = match peers {
+        Some("file") => {
+            let (file, _) = crate::record::Locator::new(ws)
+                .locate(id)
+                .ok_or_else(|| anyhow::anyhow!("cannot find the file of {id}"))?;
+            if against.is_some() {
+                bail!(
+                    "--peers file and --against do not go together; use --peers binary or -E-style --against"
+                );
+            }
+            Scope::Auto {
+                files: [file].into(),
+                ids: [id.clone()].into(),
+            }
+        }
+        None | Some("binary") => Scope::Filter(Some(&filter)),
+        Some(other) => bail!("--peers is file or binary, not {other}"),
     };
     let note = |m: &str| eprintln!("[testopt] {m}");
     let started = std::time::Instant::now();
-    let mut all = collect(
-        ws,
-        store,
-        &Scope::Filter(Some(&filter)),
-        profile,
-        &cov_target(ws),
-        &note,
-    )?;
+    let mut all = collect(ws, store, &scope, profile, &cov_target(ws), &note)?;
     // Any other test measured on this same tree counts too.
     let cache = cache_dir(store, &tree_key(ws));
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {

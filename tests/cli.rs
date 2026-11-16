@@ -405,7 +405,7 @@ fn ledger_keeps_entries_and_names_the_next_candidates() {
     assert_eq!(l["totals"]["kept"], 1);
     assert_eq!(l["totals"]["rejected"], 1);
     assert_eq!(f(&l["totals"]["kept_test_seconds_saved"]), 1.4);
-    let next: Vec<&str> = l["next"]
+    let next: Vec<&str> = l["candidates"]
         .as_array()
         .unwrap()
         .iter()
@@ -668,4 +668,101 @@ fn check_picks_its_scope_from_the_diff_and_names_what_it_cannot_see() {
     assert_eq!(c["scope_unknown_for"], serde_json::json!([]), "{c:#}");
     assert!(c["scope"]["covering_tests"].as_u64().unwrap() >= 2, "{c:#}");
     assert_eq!(c["pass"], true, "{c:#}");
+}
+
+/// What an AI session needs first: where things stand, one line per
+/// result, and the next command to run.
+#[test]
+fn status_summaries_and_next_steps_lead_a_session() {
+    let fx = Fixture::new();
+    let s = fx.ok(&["status"]);
+    assert!(
+        s["summary"].as_str().unwrap().starts_with("no run yet"),
+        "{s:#}"
+    );
+    assert!(
+        s["next"][0]
+            .as_str()
+            .unwrap()
+            .contains("testopt --tmux record"),
+        "{s:#}"
+    );
+
+    let rec = fx.ok(&["record"]);
+    assert!(
+        rec["summary"].as_str().unwrap().starts_with("7 tests"),
+        "{rec:#}"
+    );
+    assert_eq!(rec["next"][0], "testopt rank");
+    let rank = fx.ok(&["rank"]);
+    assert_eq!(
+        rank["next"][0], "testopt why 'fixture::it sleeps'",
+        "{rank:#}"
+    );
+
+    // The slowest two, surveyed in one job; kept in the store.
+    let sv = fx.ok(&["survey", "--top", "2"]);
+    assert_eq!(sv["rows"].as_array().unwrap().len(), 2, "{sv:#}");
+    assert_eq!(sv["rows"][0]["test"], "fixture::it sleeps");
+    assert_eq!(sv["rows"][0]["kind"], "fixed-wait");
+    assert_eq!(sv["rows"][1]["kind"], "process-heavy");
+    assert!(
+        sv["summary"].as_str().unwrap().contains("fixed-wait 1"),
+        "{sv:#}"
+    );
+    // `wait` answers at once for a job that has ended.
+    let job = fx.ok(&["job"]);
+    let id = job["job"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let w = fx.ok(&["wait", &id, "--timeout", "5"]);
+    assert_eq!(w["tests"], 2);
+
+    let s = fx.ok(&["status"]);
+    assert_eq!(s["latest_run"]["of_this_tree"], true, "{s:#}");
+    assert_eq!(s["survey"][0]["kind"], "fixed-wait", "{s:#}");
+    assert!(
+        s["summary"].as_str().unwrap().contains("of this commit"),
+        "{s:#}"
+    );
+
+    // A why answer is short by default: what weighs, with the next step.
+    let why = fx.ok(&["why", "sleeps"]);
+    assert!(
+        why["summary"].as_str().unwrap().contains("fixed-wait, "),
+        "{why:#}"
+    );
+    assert!(
+        why["next"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("replace the wait at tests/it.rs:17"),
+        "{why:#}"
+    );
+    assert!(why["processes"].get("by_command").is_none());
+    assert!(
+        fx.ok(&["why", "sleeps", "--full"])["processes"]
+            .get("by_command")
+            .is_some()
+    );
+
+    // Peers by file, no filter to write.
+    let c = fx.ok(&["covers", "classifies_a_positive", "--peers", "file"]);
+    assert_eq!(c["compared_with"], 6, "{c:#}");
+    assert!(
+        c["next"][0].as_str().unwrap().starts_with("delete it"),
+        "{c:#}"
+    );
+
+    // A commit later, the run is stale and status says to record again.
+    std::fs::write(fx.root.join("NOTE"), "x").unwrap();
+    git(&fx.root, &["add", "NOTE"]);
+    git(&fx.root, &["commit", "-qm", "later"]);
+    let s = fx.ok(&["status"]);
+    assert_eq!(s["latest_run"]["of_this_tree"], false, "{s:#}");
+    assert!(s["next"][0].as_str().unwrap().contains("record"), "{s:#}");
 }
