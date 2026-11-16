@@ -4,6 +4,7 @@
 
 mod coverage;
 mod dash;
+mod env;
 mod host;
 mod jobs;
 mod ledger;
@@ -152,8 +153,20 @@ enum Cmd {
     },
     /// A job's state: the newest, or the one named.
     Job { id: Option<String> },
+    /// The target's environment, applied to every command: show it, or
+    /// `set NAME=value...` (values may name {root} and {commit}) or `unset NAME...`.
+    Env {
+        #[command(subcommand)]
+        change: Option<EnvCmd>,
+    },
     /// Kill the job tmux session (--tmux-session); refuses the one testopt runs in.
     TmuxKill,
+}
+
+#[derive(Subcommand)]
+enum EnvCmd {
+    Set { pairs: Vec<String> },
+    Unset { names: Vec<String> },
 }
 
 #[derive(Subcommand)]
@@ -203,6 +216,13 @@ fn main() {
 fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
     let ws = Workspace::find(&cli.workspace)?;
     let store = Store::of(&ws)?;
+    // The target's own environment first: cargo metadata itself may depend
+    // on it (a toolchain), so the workspace is read again under it.
+    let ws = if env::apply(&store, &ws)? > 0 {
+        Workspace::find(&cli.workspace)?
+    } else {
+        ws
+    };
     let long = matches!(cli.cmd, Cmd::Record { .. } | Cmd::Check { .. });
     if cli.tmux && long {
         let kind = if matches!(cli.cmd, Cmd::Record { .. }) {
@@ -344,6 +364,14 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 0,
             )),
         },
+        Cmd::Env { change } => Ok((
+            match change {
+                None => env::show(&store, &ws),
+                Some(EnvCmd::Set { pairs }) => env::set(&store, &pairs)?,
+                Some(EnvCmd::Unset { names }) => env::unset(&store, &names)?,
+            },
+            0,
+        )),
         Cmd::TmuxKill => Ok((jobs::kill_session(&cli.tmux_session)?, 0)),
         Cmd::Job { id } => {
             let dir = match id {

@@ -460,3 +460,30 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
     );
     assert!(!other_alive);
 }
+
+#[test]
+fn the_target_s_environment_is_kept_once_and_applied_to_every_command() {
+    let fx = Fixture::new();
+    let set = fx.ok(&[
+        "env",
+        "set",
+        "NEXTEST_TEST_THREADS=2",
+        "TMPDIR={root}/../deep/tmp",
+    ]);
+    assert_eq!(set["env"]["TMPDIR"], "{root}/../deep/tmp");
+    let shown = fx.ok(&["env"]);
+    let tmp = shown["resolved"]["TMPDIR"].as_str().unwrap();
+    // {root} is the workspace root as cargo says it (/private/var, not /var).
+    let root = fx.root.canonicalize().unwrap();
+    assert_eq!(tmp, format!("{}/../deep/tmp", root.display()));
+    // Applied: nextest's own variable sets the threads, and the TMPDIR the
+    // tests get exists.
+    let rec = fx.ok(&["record", "-E", "test(fast_adds)"]);
+    assert_eq!(rec["threads"], 2, "{rec:#}");
+    assert!(Path::new(tmp).is_dir());
+    fx.ok(&["env", "unset", "NEXTEST_TEST_THREADS"]);
+    assert_eq!(
+        fx.ok(&["record", "-E", "test(fast_adds)", "--test-threads", "3"])["threads"],
+        3
+    );
+}
