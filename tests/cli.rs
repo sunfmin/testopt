@@ -527,3 +527,35 @@ fn the_target_s_environment_is_kept_once_and_applied_to_every_command() {
         3
     );
 }
+
+#[test]
+fn a_changed_test_is_timed_on_both_trees_interleaved_with_its_cpu() {
+    let fx = Fixture::new();
+    let it = fx.root.join("tests/it.rs");
+    let src = std::fs::read_to_string(&it).unwrap();
+    std::fs::write(
+        &it,
+        src.replace("    for _ in 0..6 {", "    for _ in 0..3 {"),
+    )
+    .unwrap();
+    let c = fx.ok(&["check", "HEAD", "-E", "test(spawns_processes)", "-n", "2"]);
+    assert_eq!(
+        c["tests"]["changed"],
+        serde_json::json!(["fixture::it spawns_processes"]),
+        "{c:#}"
+    );
+    let t = &c["tests"]["timing"][0];
+    assert_eq!(t["interleaved"], true, "{c:#}");
+    assert_eq!(t["base"]["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(t["head"]["runs"].as_array().unwrap().len(), 2);
+    // Half the processes: about half the time, and both sides used CPU.
+    assert!(f(&t["delta_s"]) < -0.3, "{c:#}");
+    assert!(
+        f(&t["base"]["cpu_median_s"]) > 0.0 && f(&t["head"]["cpu_median_s"]) > 0.0,
+        "{c:#}"
+    );
+
+    let time = fx.ok(&["time", "spawns_processes", "-n", "1"]);
+    assert_eq!(time["cpu_runs"].as_array().unwrap().len(), 1, "{time:#}");
+    assert!(f(&time["cpu_median_s"]) > 0.0, "{time:#}");
+}

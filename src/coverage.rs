@@ -850,26 +850,36 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
         "CARGO_TARGET_DIR".to_string(),
         plain_base.display().to_string(),
     )];
+    let shown = |t: &crate::probe::Timing| -> Value {
+        json!({"median_s": t.median_s, "spread_s": t.spread_s, "runs": t.runs, "cpu_median_s": t.cpu_median_s, "reliable": t.reliable, "max_load_per_core": t.max_load_per_core})
+    };
     let times_of = |w: &Workspace, env: &[(String, String)], id: &TestId| -> Option<Value> {
         crate::probe::time_runs(w, o.profile, id, o.runs, o.threshold, env)
-            .map(|t| json!({"median_s": t.median_s, "spread_s": t.spread_s, "runs": t.runs, "reliable": t.reliable, "max_load_per_core": t.max_load_per_core}))
+            .map(|t| shown(&t))
             .map_err(|e| note(&format!("timing {id}: {e:#}")))
             .ok()
     };
     let mut timed = vec![];
     for id in &changed {
         note(&format!(
-            "check: timing changed test {id}, base then working tree"
+            "check: timing changed test {id}, base and working tree interleaved"
         ));
-        let before = times_of(&base_ws, &plain_base_env, id);
-        let after = times_of(ws, &[], id);
-        let delta = match (&before, &after) {
-            (Some(b), Some(a)) => Some(round(
-                a["median_s"].as_f64().unwrap_or(0.0) - b["median_s"].as_f64().unwrap_or(0.0),
-            )),
-            _ => None,
+        let base_side = crate::probe::Side {
+            ws: &base_ws,
+            env: &plain_base_env,
         };
-        timed.push(json!({"test": id.to_string(), "change": "changed", "base": before, "head": after, "delta_s": delta}));
+        let head_side = crate::probe::Side { ws, env: &[] };
+        match crate::probe::time_pair(&base_side, &head_side, o.profile, id, o.runs, o.threshold) {
+            Ok((b, h)) => timed.push(
+                json!({"test": id.to_string(), "change": "changed", "interleaved": true,
+                "base": shown(&b), "head": shown(&h), "delta_s": round(h.median_s - b.median_s),
+                "cpu_delta_s": round(h.cpu_median_s - b.cpu_median_s)}),
+            ),
+            Err(e) => {
+                note(&format!("timing {id}: {e:#}"));
+                timed.push(json!({"test": id.to_string(), "change": "changed", "base": null, "head": null, "delta_s": null}));
+            }
+        }
     }
     for id in &deleted {
         note(&format!("check: timing deleted test {id} at base"));
