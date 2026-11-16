@@ -196,6 +196,12 @@ fn why_finds_a_fixed_wait_in_a_helper_and_counts_spawned_processes() {
     let w = fx.ok(&["why", "fixture::it spawns_processes"]);
     assert_eq!(w["kind"], "process-heavy", "{w:#}");
     assert_eq!(w["processes"]["spawned"], 6, "{w:#}");
+    // A range: at least what was seen, at most that plus what the host
+    // started unseen.
+    assert!(
+        w["processes"]["spawned_at_most"].as_u64().unwrap() >= 6,
+        "{w:#}"
+    );
     assert_eq!(w["processes"]["by_program"][0]["program"], "sleep", "{w:#}");
     assert!(
         f(&w["breakdown"]["with_child_processes_alive_s"]) >= 1.0,

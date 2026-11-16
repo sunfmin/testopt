@@ -60,9 +60,32 @@ impl Seen {
     }
 }
 
+/// What the samples say of every process the host started meanwhile.
+#[derive(Debug, Clone, Default)]
+pub struct Census {
+    pub samples: usize,
+    /// The highest pid at the first sample, and the highest seen after.
+    pub first_pid: u32,
+    pub highest_pid: u32,
+    /// Processes started after the first sample that some sample saw.
+    pub host_started_seen: usize,
+}
+
+impl Census {
+    /// Processes the host started that no sample saw, ours or not: pids
+    /// are handed out in order, so it started `highest - first` of them.
+    /// None when the pids wrapped around.
+    pub fn missed(&self) -> Option<usize> {
+        if self.highest_pid < self.first_pid {
+            return None;
+        }
+        Some(((self.highest_pid - self.first_pid) as usize).saturating_sub(self.host_started_seen))
+    }
+}
+
 pub struct Sampler {
     stop: Arc<AtomicBool>,
-    handle: std::thread::JoinHandle<(Vec<Seen>, usize)>,
+    handle: std::thread::JoinHandle<(Vec<Seen>, Census)>,
 }
 
 pub fn now_epoch() -> f64 {
@@ -81,13 +104,29 @@ impl Sampler {
             let mut tracked: HashMap<u32, Seen> = HashMap::new();
             let mut tracked_start: HashMap<u32, f64> = HashMap::new();
             let mut tracked_comm: HashMap<u32, String> = HashMap::new();
-            let mut samples = 0;
+            let mut census = Census::default();
+            let mut first_hi: Option<u32> = None;
+            let mut new_seen: HashSet<u32> = HashSet::new();
             let mut ours: HashSet<u32> = HashSet::from([root]);
             while !flag.load(Ordering::Relaxed) {
                 let t0 = Instant::now();
                 let now = now_epoch();
                 let all = list_all();
-                samples += 1;
+                census.samples += 1;
+                // pids are handed out in increasing order: the highest one
+                // seen marks how many processes the host has started.
+                let hi = all.keys().copied().max().unwrap_or(0);
+                match first_hi {
+                    None => {
+                        first_hi = Some(hi);
+                        census.first_pid = hi;
+                        census.highest_pid = hi;
+                    }
+                    Some(f) => {
+                        census.highest_pid = census.highest_pid.max(hi);
+                        new_seen.extend(all.keys().filter(|p| **p > f));
+                    }
+                }
                 // Children of anything already ours become ours; a process
                 // reparented after its parent ended stays ours by pid and start.
                 let mut changed = true;
@@ -146,13 +185,14 @@ impl Sampler {
                     std::thread::sleep(interval - spent);
                 }
             }
-            (tracked.into_values().collect(), samples)
+            census.host_started_seen = new_seen.len();
+            (tracked.into_values().collect(), census)
         });
         Sampler { stop, handle }
     }
 
     /// Stops sampling: every process seen, and the number of samples taken.
-    pub fn finish(self) -> (Vec<Seen>, usize) {
+    pub fn finish(self) -> (Vec<Seen>, Census) {
         self.stop.store(true, Ordering::Relaxed);
         self.handle.join().unwrap_or_default()
     }

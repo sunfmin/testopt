@@ -92,7 +92,8 @@ pub fn why(
     let running = nextest::start(ws, &alone(profile, &id, &[]))?;
     let sampler = Sampler::start(running.pid(), Duration::from_millis(interval_ms));
     let out = running.wait()?;
-    let (seen, samples) = sampler.finish();
+    let (seen, census) = sampler.finish();
+    let samples = census.samples;
     let load_end = Load::now();
     let Some(t) = out
         .tests
@@ -177,10 +178,14 @@ pub fn why(
         },
         "processes": {
             "spawned": spawned.len(),
+            // The test started at least what was seen, and at most that plus
+            // every process the host started that no sample saw.
+            "spawned_at_most": census.missed().map(|m| spawned.len() + m),
+            "host_started_unseen": census.missed(),
             "peak_concurrent": procs::peak_concurrency(&spawned),
             "sample_interval_ms": interval_ms,
             "samples": samples,
-            "note": "sampled: a process shorter than the interval can be missed, so counts are a floor",
+            "note": "sampled: a process shorter than the interval can be missed; spawned is a floor and spawned_at_most a ceiling (pids are handed out in order, so the host's unseen starts bound the misses)",
             "by_program": by_program.iter().take(15).map(|g| json!({"program": g.command, "count": g.count, "seconds": round(g.seconds), "cpu_s": round(g.cpu_s)})).collect::<Vec<_>>(),
             "by_command": by_command.iter().take(15).map(|g| json!({"command": g.command, "count": g.count, "seconds": round(g.seconds)})).collect::<Vec<_>>(),
             "longest": longest.iter().take(8).map(|p| json!({"command": p.args.iter().take(6).cloned().collect::<Vec<_>>().join(" "), "seconds": round(p.duration()), "starts_at_s": round(p.start - t0)})).collect::<Vec<_>>(),
