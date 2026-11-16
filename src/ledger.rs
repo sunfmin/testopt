@@ -116,7 +116,8 @@ pub fn show(store: &Store, next: usize) -> Result<Value> {
             if named.contains(id.as_str()) {
                 continue;
             }
-            upcoming.push(json!({"test": id, "seconds": round(t.seconds), "est_wall_saving_s": round(t.seconds / run.threads.max(1) as f64)}));
+            let (kind, step) = crate::survey::next_step(store, &id);
+            upcoming.push(json!({"test": id, "seconds": round(t.seconds), "est_wall_saving_s": round(t.seconds / run.threads.max(1) as f64), "kind": kind, "next": step}));
             if upcoming.len() >= next {
                 break;
             }
@@ -141,7 +142,7 @@ pub fn add_from_check(
     ws: &Workspace,
     store: &Store,
     job: &str,
-    kind: &str,
+    kind: Option<&str>,
     status: &str,
     change: &str,
     note: Option<&str>,
@@ -212,12 +213,14 @@ pub fn add_from_check(
         if let Some(n) = note {
             reason = format!("{n}; {reason}");
         }
+        let test = t["test"].as_str().unwrap_or_default().to_string();
+        let kind = kind_for(store, &test, kind, t["change"].as_str().unwrap_or_default())?;
         added.push(add(
             ws,
             store,
             Add {
-                test: t["test"].as_str().unwrap_or_default().to_string(),
-                kind: kind.to_string(),
+                test,
+                kind,
                 status: status.to_string(),
                 change: if change.is_empty() {
                     t["change"].as_str().unwrap_or_default().to_string()
@@ -255,4 +258,25 @@ pub fn from_times(store: &Store, test: &str) -> Result<(f64, f64, Option<String>
         )
     });
     Ok((before.median_s, after.median_s, note))
+}
+
+/// The kind of an entry: the one given; else what `survey` found the test
+/// to be; else `redundant` for a test the change deletes.
+pub fn kind_for(store: &Store, test: &str, given: Option<&str>, change: &str) -> Result<String> {
+    if let Some(k) = given {
+        return Ok(k.to_string());
+    }
+    if let Some(k) = crate::survey::latest(store)
+        .into_iter()
+        .find(|r| r.test == test)
+        .and_then(|r| r.kind)
+    {
+        return Ok(k);
+    }
+    if change == "deleted" {
+        return Ok("redundant".into());
+    }
+    bail!(
+        "no survey row says what kind of test {test} is; give --kind (fixed-wait | poll | process-heavy | redundant | setup | other)"
+    )
 }

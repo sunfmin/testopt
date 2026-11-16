@@ -288,12 +288,23 @@ fn time_gives_median_and_spread_and_flags_a_loaded_host() {
 #[test]
 fn covers_finds_a_test_whose_lines_another_covers() {
     let fx = Fixture::new();
+    // A build of the coverage layout before builds were kept per flags.
+    let old = fx.root.join("target/testopt-cov/debug");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("stale"), "x").unwrap();
     let c = fx.ok(&[
         "covers",
         "classifies_a_positive",
         "--against",
         "test(classifies_)",
     ]);
+    assert!(!old.exists(), "the old layout's build is left behind");
+    let flags_dirs: Vec<_> = std::fs::read_dir(fx.root.join("target/testopt-cov"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(flags_dirs.len(), 1, "{flags_dirs:?}");
     assert_eq!(c["files"][0]["file"], "src/lib.rs", "{c:#}");
     assert_eq!(c["covered_by_no_other"], 0, "{c:#}");
     let other = &c["others"][0];
@@ -505,6 +516,11 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
         "export TESTOPT_HOME={home}; \
          {exe} -C {ws} --tmux --tmux-session host record > {d}/use.json 2>&1; echo $? > {d}/use.code; \
          {exe} -C {ws} --tmux --tmux-session jobs --wait-timeout 120 record -E 'test(fast_adds)' > {d}/job.json 2>/dev/null; echo $? > {d}/job.code; \
+         {exe} -C {ws} --tmux --tmux-session jobs --wait-timeout 120 why sleeps > {d}/why.json 2>/dev/null; echo $? > {d}/why.code; \
+         {exe} -C {ws} --tmux --tmux-session jobs --detach why fast_adds > {d}/detached.json 2>/dev/null; \
+         {exe} -C {ws} wait --timeout 120 > {d}/waited.json 2>/dev/null; echo $? > {d}/waited.code; \
+         {exe} -C {ws} --tmux --tmux-session jobs rank > {d}/short.json 2>/dev/null; echo $? > {d}/short.code; \
+         cd {ws}/.. && {exe} -C ws --tmux --tmux-session jobs --wait-timeout 120 why fast_adds > {d}/rel.json 2>/dev/null; echo $? > {d}/rel.code; \
          {exe} -C {ws} --tmux-session host tmux-kill > {d}/kill.json 2>&1; echo $? > {d}/kill.code; \
          {exe} -C {ws} --tmux-session other tmux-kill > {d}/other.json 2>&1; echo $? > {d}/other.code; \
          sleep 60",
@@ -521,7 +537,7 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
             .success()
     );
     let other_code = dir.path().join("other.code");
-    for _ in 0..300 {
+    for _ in 0..900 {
         if other_code.exists() {
             break;
         }
@@ -564,6 +580,25 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
     assert_eq!(read("job.code").trim(), "0", "{}", read("job.json"));
     let job: Value = serde_json::from_str(&read("job.json")).unwrap();
     assert_eq!(job["tests"], 1, "{job:#}");
+    // Any command that runs tests can be a job; the caller gets its answer.
+    let why: Value = serde_json::from_str(&read("why.json")).unwrap_or_default();
+    assert_eq!(read("why.code").trim(), "0", "{why:#}");
+    assert_eq!(why["kind"], "fixed-wait", "{why:#}");
+    assert!(why["summary"].is_string(), "{why:#}");
+    // `wait` answers as the command it waited on.
+    let waited: Value = serde_json::from_str(&read("waited.json")).unwrap_or_default();
+    assert_eq!(read("waited.code").trim(), "0", "{waited:#}");
+    assert!(
+        waited["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains("fast_adds")),
+        "{waited:#}"
+    );
+    // A relative workspace names the same one in the job.
+    assert_eq!(read("rel.code").trim(), "0", "{}", read("rel.json"));
+    // A command that returns at once is refused, not run in the foreground.
+    assert_eq!(read("short.code").trim(), "2", "{}", read("short.json"));
+    assert!(read("short.json").contains("--tmux runs a command that runs tests"));
     let jobs = std::fs::read_dir(
         fx.home
             .read_dir()
@@ -579,7 +614,8 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
         .flatten()
         .filter(|j| j.path().join("testopt").is_file())
         .count();
-    assert_eq!(copies, 1);
+    // record, why, the detached why and the relative one: each its own copy.
+    assert_eq!(copies, 4);
 }
 
 #[test]
@@ -726,11 +762,13 @@ fn status_summaries_and_next_steps_lead_a_session() {
         s["summary"].as_str().unwrap().starts_with("no run yet"),
         "{s:#}"
     );
-    assert!(
-        s["next"][0]
-            .as_str()
-            .unwrap()
-            .contains("testopt --tmux record"),
+    // Ready to run: no placeholders, one per profile the workspace names.
+    assert_eq!(
+        s["next"],
+        serde_json::json!([
+            "testopt --tmux record",
+            "testopt --tmux record --profile slow"
+        ]),
         "{s:#}"
     );
 
@@ -769,6 +807,14 @@ fn status_summaries_and_next_steps_lead_a_session() {
         sv["summary"].as_str().unwrap().contains("fixed-wait 1"),
         "{sv:#}"
     );
+    // The survey already said why: next is what to do about the fixed wait.
+    assert!(
+        sv["next"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("replace the wait at tests/it.rs:17"),
+        "{sv:#}"
+    );
     // `wait` answers at once for a job that has ended.
     let job = fx.ok(&["job"]);
     let id = job["job"]
@@ -780,8 +826,82 @@ fn status_summaries_and_next_steps_lead_a_session() {
         .to_string();
     let w = fx.ok(&["wait", &id, "--timeout", "5"]);
     assert_eq!(w["tests"], 2);
+    // ... with the summary of the survey it waited on.
+    assert!(
+        w["summary"].as_str().unwrap().contains("tests surveyed"),
+        "{w:#}"
+    );
+
+    // The next step of each candidate follows from its survey row: a
+    // process-heavy test is compared with its peers, ready to run.
+    let l = fx.ok(&["ledger"]);
+    let step = |l: &Value, test: &str| -> String {
+        l["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["test"] == test)
+            .map(|c| c["next"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("{test} not a candidate: {l:#}"))
+    };
+    assert!(
+        step(&l, "fixture::it sleeps").starts_with("replace the wait at tests/it.rs:17"),
+        "{l:#}"
+    );
+    assert_eq!(
+        step(&l, "fixture::it spawns_processes"),
+        "testopt --tmux covers 'fixture::it spawns_processes' --peers file"
+    );
+    // An entry needs no --kind once the survey said it; the answer says
+    // where the ledger stands and what to try next.
+    let added = fx.ok(&[
+        "ledger",
+        "add",
+        "--test",
+        "sleeps",
+        "--status",
+        "tried",
+        "--reason",
+        "first look",
+    ]);
+    assert_eq!(added["added"]["kind"], "fixed-wait", "{added:#}");
+    assert!(
+        added["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("added tried fixture::it sleeps (fixed-wait); ledger: 1 tests"),
+        "{added:#}"
+    );
+    assert_eq!(
+        added["next"][0], "testopt --tmux covers 'fixture::it spawns_processes' --peers file",
+        "{added:#}"
+    );
+    // A test no survey has seen needs its kind given.
+    let (e, code) = fx.run(&[
+        "ledger",
+        "add",
+        "--test",
+        "fast_adds",
+        "--status",
+        "tried",
+        "--reason",
+        "x",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        e["error"].as_str().unwrap().contains("give --kind"),
+        "{e:#}"
+    );
 
     let s = fx.ok(&["status"]);
+    assert!(
+        s["next"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "testopt --tmux covers 'fixture::it spawns_processes' --peers file"),
+        "{s:#}"
+    );
     assert_eq!(s["latest_run"]["of_this_tree"], true, "{s:#}");
     assert_eq!(kind_of(&s["survey"], "fixture::it sleeps"), "fixed-wait");
     assert!(

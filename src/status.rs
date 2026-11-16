@@ -63,9 +63,15 @@ pub fn status(ws: &Workspace, store: &Store) -> Value {
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or(Value::Null);
+            let exit = std::fs::read_to_string(dir.join("exit")).ok();
+            let state = match (exit, fresh) {
+                (Some(code), _) => format!("ended without a result (exit {})", code.trim()),
+                (None, Some(true)) => "running".to_string(),
+                (None, _) => "silent for 2+ minutes (killed?)".to_string(),
+            };
             jobs.push(json!({
                 "job": e.file_name().to_string_lossy(),
-                "state": if fresh == Some(true) { "running" } else { "silent for 2+ minutes (ended without a result?)" },
+                "state": state,
                 "progress": progress,
             }));
         }
@@ -86,15 +92,18 @@ pub fn status(ws: &Workspace, store: &Store) -> Value {
                     .into(),
             );
         }
-        next.push("testopt --tmux record [--filter-file F | -E EXPR] [--profile P]".into());
+        next.push("testopt --tmux record".into());
+        for p in nextest_profiles(&ws.root) {
+            next.push(format!("testopt --tmux record --profile {p}"));
+        }
     } else if survey.is_empty() {
         next.push("testopt --tmux survey --top 20".into());
     }
-    if let Some(t) = ledger["candidates"][0]["test"].as_str() {
-        next.push(format!("testopt why '{t}'"));
+    if let Some(step) = ledger["candidates"][0]["next"].as_str() {
+        next.push(step.to_string());
     }
     let summary = format!(
-        "{}; {}; {} survey row(s); ledger {} entries ({} kept)",
+        "{}; {}; {} survey row(s); ledger {} tests ({} kept)",
         match latest {
             Some(r) => format!(
                 "latest run {} tests, {:.0}s wall, {}",
@@ -114,7 +123,7 @@ pub fn status(ws: &Workspace, store: &Store) -> Value {
             format!("{} job(s) without a result", jobs.len())
         },
         survey.len(),
-        ledger["totals"]["entries"],
+        ledger["totals"]["tests"],
         ledger["totals"]["kept"],
     );
     json!({
@@ -138,4 +147,23 @@ pub fn status(ws: &Workspace, store: &Store) -> Value {
             "tmux": has(&["tmux", "-V"]),
         },
     })
+}
+
+/// The profiles the workspace's `.config/nextest.toml` names, but `default`.
+fn nextest_profiles(root: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join(".config/nextest.toml")) else {
+        return vec![];
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return vec![];
+    };
+    doc.get("profile")
+        .and_then(|p| p.as_table())
+        .map(|t| {
+            t.keys()
+                .filter(|k| *k != "default" && !k.starts_with("default-"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }

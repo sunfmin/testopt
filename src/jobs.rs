@@ -152,16 +152,13 @@ pub fn start_in_tmux(
         "--job".into(),
         shell_quote(&id),
     ];
-    cmd.extend(
-        args.iter()
-            .filter(|a| *a != "--tmux")
-            .map(|a| shell_quote(a)),
-    );
+    cmd.extend(job_args(args).iter().map(|a| shell_quote(a)));
     let script = format!(
-        ". {}; cd {}; {}; echo; echo \"[testopt] job {id} ended (exit $?); press enter to close\"; read _",
+        ". {}; cd {}; {}; rc=$?; echo $rc > {}; echo; if [ $rc -eq 0 ]; then echo \"[testopt] job {id} ended (exit 0); this window closes in 60s\"; sleep 60; else echo \"[testopt] job {id} ended (exit $rc); press enter to close\"; read _; fi",
         shell_quote(&job.dir.join("env.sh").to_string_lossy()),
         shell_quote(&ws_root.to_string_lossy()),
-        cmd.join(" ")
+        cmd.join(" "),
+        shell_quote(&job.dir.join("exit").to_string_lossy())
     );
     let has = Command::new("tmux")
         .args(["has-session", "-t", &format!("={session}")])
@@ -231,6 +228,28 @@ pub fn wait(job_dir: &Path, timeout: Duration) -> Result<Value> {
                 v["error"].as_str().unwrap_or("unknown error")
             );
         }
+        // The job's window writes its exit code when testopt ends there. Ended
+        // with no result (it failed before it could write one, or was
+        // killed): say so now rather than wait out the timeout.
+        if let Ok(code) = std::fs::read_to_string(job_dir.join("exit"))
+            && !result.exists()
+        {
+            let log = std::fs::read_to_string(job_dir.join("log")).unwrap_or_default();
+            let tail: Vec<&str> = log.lines().rev().take(5).collect();
+            bail!(
+                "job {} ended (exit {}) without a result; its window in tmux shows why{}",
+                job_dir.display(),
+                code.trim(),
+                if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; its log ends: {}",
+                        tail.into_iter().rev().collect::<Vec<_>>().join(" / ")
+                    )
+                }
+            );
+        }
         if began.elapsed() > timeout {
             bail!(
                 "job {} not done after {}s; it keeps running in tmux; `testopt job` shows it",
@@ -239,8 +258,12 @@ pub fn wait(job_dir: &Path, timeout: Duration) -> Result<Value> {
             );
         }
         if last_say.elapsed() > Duration::from_secs(30) {
-            if let Ok(p) = std::fs::read_to_string(job_dir.join("progress.json")) {
-                eprintln!("[testopt] waiting: {}", p.replace('\n', " "));
+            if let Some(line) = std::fs::read(job_dir.join("progress.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<crate::nextest::Progress>(&b).ok())
+                .map(|p| progress_line(&p))
+            {
+                eprintln!("[testopt] waiting: {line}");
             }
             last_say = Instant::now();
         }
@@ -258,4 +281,116 @@ pub fn unfinished(store: &Store) -> Option<PathBuf> {
         .collect();
     dirs.sort();
     dirs.pop()
+}
+
+/// One line of a job's progress: `538/993, 0 failed, 209s, ~176s left — last: …`.
+pub fn progress_line(p: &crate::nextest::Progress) -> String {
+    let eta = (p.done > 0 && p.done < p.total)
+        .then(|| p.elapsed_s / p.done as f64 * (p.total - p.done) as f64);
+    format!(
+        "{}/{}, {} failed, {:.0}s{} — last: {}",
+        p.done,
+        p.total,
+        p.failed,
+        p.elapsed_s,
+        eta.map(|e| format!(", ~{e:.0}s left")).unwrap_or_default(),
+        p.last
+    )
+}
+
+/// The command a job ran, from its id (`<date>-<time>-<command>-<pid>`).
+pub fn kind_of(job_dir: &Path) -> String {
+    job_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.split('-').nth(2))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The arguments a job runs with: the caller's, less `--tmux`, and less the
+/// workspace (`-C`): the job runs in the workspace root, where a relative
+/// `-C` would name another directory.
+fn job_args(args: &[String]) -> Vec<String> {
+    let mut out = vec![];
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        match a.as_str() {
+            "--tmux" => {}
+            "-C" | "--workspace" => skip = true,
+            _ if a.starts_with("--workspace=") || (a.starts_with("-C") && a.len() > 2) => {}
+            _ => out.push(a.clone()),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_is_one_line_with_an_eta() {
+        let p = crate::nextest::Progress {
+            done: 538,
+            total: 993,
+            failed: 0,
+            elapsed_s: 209.4,
+            last: "PASS lander::a_landing".into(),
+            finished: false,
+        };
+        assert_eq!(
+            progress_line(&p),
+            "538/993, 0 failed, 209s, ~177s left — last: PASS lander::a_landing"
+        );
+        let start = crate::nextest::Progress {
+            total: 20,
+            ..Default::default()
+        };
+        assert_eq!(progress_line(&start), "0/20, 0 failed, 0s — last: ");
+    }
+
+    #[test]
+    fn a_job_runs_without_tmux_or_the_workspace() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            job_args(&a(&[
+                "-C", "rel/ws", "--tmux", "covers", "x", "--peers", "file"
+            ])),
+            a(&["covers", "x", "--peers", "file"])
+        );
+        assert_eq!(
+            job_args(&a(&[
+                "--workspace=w",
+                "-Cw",
+                "--workspace",
+                "w",
+                "why",
+                "t"
+            ])),
+            a(&["why", "t"])
+        );
+    }
+
+    #[test]
+    fn wait_ends_when_the_job_ended_without_a_result() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("exit"), "2\n").unwrap();
+        std::fs::write(
+            dir.path().join("log"),
+            "running cargo metadata: no such file\n",
+        )
+        .unwrap();
+        let t = Instant::now();
+        let e = wait(dir.path(), Duration::from_secs(60))
+            .unwrap_err()
+            .to_string();
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert!(e.contains("ended (exit 2) without a result"), "{e}");
+        assert!(e.contains("running cargo metadata"), "{e}");
+    }
 }

@@ -180,3 +180,33 @@ pub fn latest(store: &Store) -> Vec<Row> {
     });
     v
 }
+
+/// The step that follows from what `survey` found about `test`, ready to
+/// run: a fixed wait is replaced, a process-heavy test compared with its
+/// peers; a test not surveyed yet is asked `why`.
+pub fn next_step(store: &Store, test: &str) -> (Option<String>, String) {
+    let row = latest(store).into_iter().find(|r| r.test == test);
+    (
+        row.as_ref().and_then(|r| r.kind.clone()),
+        step_for(test, row.as_ref()),
+    )
+}
+
+/// The step that follows from `row`, the survey's row of `test` (none: not
+/// surveyed yet).
+pub fn step_for(test: &str, row: Option<&Row>) -> String {
+    let q = format!("'{}'", test.replace('\'', "'\\''"));
+    let kind = row.and_then(|r| r.kind.clone());
+    match (kind.as_deref(), row) {
+        (Some("fixed-wait"), Some(r)) => format!(
+            "replace the wait at {} with a wait on its condition, then: testopt time {q} -n 5",
+            r.cited
+                .first()
+                .and_then(|c| c.split(' ').next())
+                .unwrap_or("the cited line")
+        ),
+        (Some("process-heavy" | "poll"), _) => format!("testopt --tmux covers {q} --peers file"),
+        (Some(_), _) => format!("testopt time {q} -n 5"),
+        (None, _) => format!("testopt why {q}"),
+    }
+}

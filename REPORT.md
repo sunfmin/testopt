@@ -487,3 +487,40 @@ commits were safe, and the work resumed in session `testopt-agent`.
   after `chmod -R u+w`.
 - **afkconvoy itself.** `git worktree list` in afkconvoy names no testopt
   path, and nothing in afkconvoy was committed or pushed.
+
+## Second pass: what was awkward for an AI session, and the fixes
+
+These were found by walking the whole loop on a copy of the fixture, the
+way a session does, and by this session's own use on afkconvoy. Each fix
+has a test, and the two job fixes were also checked with a mutation.
+
+| awkward | now |
+|---|---|
+| A `--tmux` job with a relative `-C` failed, because the job `cd`s to the workspace root first. Its caller then **waited for the full 3 h timeout**, because the job died before writing `result.json`. | The job drops `-C`. Its window writes the exit code to the job dir, so `wait` ends at once with the exit code and the log's tail. With the `-C` fix reverted, the tmux test fails in 5.5 s with that error instead of hanging. `status` names such a job "ended without a result (exit N)". |
+| `--tmux` was silently ignored by `covers`, `time` and `why`, though `covers` can take minutes. | Every command that runs tests can be a tmux job. `--tmux` on `rank` and the like is an error. |
+| The job window printed the wrong exit code (`$?` of an `echo`), and every window waited for Enter. | The real code is shown. A window closes 60 s after success and stays open after a failure. |
+| The waiting progress was pretty-printed JSON squashed onto one line. | One line: `538/993, 0 failed, 209s, ~177s left — last: …`. |
+| `wait` gave a bare result. | It answers as the command it waited on, with `summary` and `next`. |
+| `--kind` was required, so the suggested commands carried a `<kind>` placeholder. | `--kind` defaults to the survey's kind, or `redundant` for a deleted test. Every suggested command can be run as given. |
+| `ledger add` returned only the entry. | It returns the ledger's totals and the next candidate's step. |
+| After `survey`, `next` was `why --full` on a test the survey had just explained. `status` and `ledger` also said `why`. | Candidates carry their survey kind and a `next` step: replace the cited wait, or compare coverage with peers. `status`, `ledger`, `ledger add` and `survey` all point to it. |
+| With no run, `status` suggested `record [--filter-file F \| -E EXPR] [--profile P]`. | `testopt --tmux record`, plus one per profile the workspace's nextest config names. |
+| `covers` named a field `shared` beside `shared_arms`. | `shared_lines`. |
+| Builds in the coverage dir's old layout were left on disk. | They are removed: the dir is testopt's alone. |
+| Ledger counts mixed entries and tests. | They are labelled `N entries on M tests`. |
+
+The walk afterwards, with only `summary` and `next` shown:
+
+```
+status   "no run yet; …"                              → ["testopt --tmux record", "testopt --tmux record --profile slow"]
+survey   "3 tests surveyed: fixed-wait 1 (0.2s wall), process-heavy 1 (0.0s wall), …"
+                                                      → ["replace the wait at tests/it.rs:17 with a wait on its condition, then: testopt time 'fixture::it sleeps' -n 5"]
+covers   "fixture::it classifies_a_positive: 5 lines, 2 arms; 0 lines and 0 arms no other compared test covers; within 1 other test(s)"
+                                                      → ["delete it (… covered by fixture::it classifies_every_sign), then: testopt --tmux check HEAD"]
+check    "PASS; lost 0 lines, 0 arms; touched tests change -0.005s"  → ["testopt ledger add --from-check latest --status kept"]
+ledger add "added kept fixture::it classifies_a_positive (redundant); ledger: 1 tests, 1 kept (0.005 test-s, ≈0.0s wall), …"
+                                                      → ["replace the wait at tests/it.rs:17 …"]
+```
+
+`covers --tmux` on the fixture copy, with a relative `-C`, took 3.7 s.
+testopt's own tests are now 27 (14 unit, 13 CLI), passing in 13.7 s.

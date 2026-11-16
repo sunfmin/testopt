@@ -196,6 +196,24 @@ fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<(Vec<(String, String)>, 
         "{:012x}",
         crate::workspace::fnv(flags.as_bytes()) & 0xffff_ffff_ffff
     ));
+    // `target_dir` is testopt's alone: anything in it not named for a set
+    // of flags is a build of the layout before this one, and only takes disk.
+    for e in std::fs::read_dir(target_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let flags_dir = name.len() == 12 && name.chars().all(|c| c.is_ascii_hexdigit());
+        if !flags_dir {
+            let p = e.path();
+            let _ = if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+        }
+    }
     env.retain(|(k, _)| k != "CARGO_TARGET_DIR" && k != "CARGO_LLVM_COV_TARGET_DIR");
     env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
     env.push((
@@ -678,7 +696,7 @@ pub fn covers(
         others.push(json!({
             "test": oid.to_string(),
             "lines": theirs,
-            "shared": shared,
+            "shared_lines": shared,
             "share_of_this": round(shared as f64 / n.max(1) as f64),
             "branch_arms": their_arms,
             "shared_arms": shared_arms,
@@ -687,7 +705,7 @@ pub fn covers(
         }));
     }
     let unique_arms = minus(my_arms, &union_arms);
-    others.sort_by(|a, b| b["shared"].as_u64().cmp(&a["shared"].as_u64()));
+    others.sort_by(|a, b| b["shared_lines"].as_u64().cmp(&a["shared_lines"].as_u64()));
     let unique = minus(mine, &union_others);
     let by_file: Vec<Value> = mine
         .iter()

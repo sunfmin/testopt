@@ -202,9 +202,10 @@ enum LedgerCmd {
         /// `<binary-id> <name>` of the test (or a name for the change).
         #[arg(long)]
         test: Option<String>,
-        /// fixed-wait | poll | process-heavy | redundant | setup | other
+        /// fixed-wait | poll | process-heavy | redundant | setup | other.
+        /// Default: the kind `survey` found, or `redundant` for a deleted test.
         #[arg(long)]
-        kind: String,
+        kind: Option<String>,
         /// tried | kept | rejected
         #[arg(long)]
         status: String,
@@ -243,6 +244,8 @@ fn main() {
         Cmd::Check { .. } => "check",
         Cmd::Survey { .. } => "survey",
         Cmd::Ledger { add: None, .. } => "ledger",
+        Cmd::Ledger { add: Some(_), .. } => "ledger-add",
+        Cmd::Status => "status",
         _ => "",
     };
     match run(cli, &args[1..]) {
@@ -269,15 +272,23 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
     } else {
         ws
     };
-    let long = matches!(
-        cli.cmd,
-        Cmd::Record { .. } | Cmd::Check { .. } | Cmd::Survey { .. }
-    );
-    if cli.tmux && long {
-        let kind = match cli.cmd {
-            Cmd::Record { .. } => "record",
-            Cmd::Survey { .. } => "survey",
-            _ => "check",
+    // The commands that run tests, and so can take minutes: each can run as
+    // a tmux job. A short one asked to is refused, not run in the foreground.
+    let kind = match cli.cmd {
+        Cmd::Record { .. } => Some("record"),
+        Cmd::Check { .. } => Some("check"),
+        Cmd::Survey { .. } => Some("survey"),
+        Cmd::Covers { .. } => Some("covers"),
+        Cmd::Time { .. } => Some("time"),
+        Cmd::Why { .. } => Some("why"),
+        _ => None,
+    };
+    let strict = matches!(cli.cmd, Cmd::Time { strict: true, .. });
+    if cli.tmux {
+        let Some(kind) = kind else {
+            anyhow::bail!(
+                "--tmux runs a command that runs tests (record, check, survey, covers, time, why); this one returns at once"
+            );
         };
         let job = jobs::start_in_tmux(&store, &ws.root, &cli.tmux_session, kind, raw_args)?;
         eprintln!(
@@ -294,13 +305,36 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
             ));
         }
         let v = jobs::wait(&job.dir, Duration::from_secs(cli.wait_timeout))?;
-        let code = if kind == "check" && v["pass"] == false {
-            1
-        } else {
-            0
-        };
-        return Ok((v, code));
+        return Ok((v.clone(), exit_code(kind, &v, strict)));
     }
+    // Run as a job (by --tmux): commands that keep no job of their own get
+    // one here, so the waiting caller finds their result.
+    let own_job = match (&cli.job, kind) {
+        (Some(id), Some("covers" | "time" | "why")) => Some(jobs::Job::open(&store, id)?),
+        _ => None,
+    };
+    let r = run_cmd(cli, ws, store);
+    if let Some(job) = own_job {
+        job.finish(
+            &r.as_ref()
+                .map(|(v, _)| v.clone())
+                .map_err(|e| anyhow::anyhow!("{e:#}")),
+        )?;
+    }
+    r
+}
+
+/// The exit code of a result: 1 for a failed check, 3 for a flagged time
+/// under --strict, 0 otherwise.
+fn exit_code(kind: &str, v: &Value, strict: bool) -> i32 {
+    match kind {
+        "check" if v["pass"] == false => 1,
+        "time" if strict && v["reliable"] == false => 3,
+        _ => 0,
+    }
+}
+
+fn run_cmd(cli: Cli, ws: Workspace, store: Store) -> Result<(Value, i32)> {
     match cli.cmd {
         Cmd::Record {
             filter_file,
@@ -348,7 +382,11 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 None => jobs::unfinished(&store)
                     .ok_or_else(|| anyhow::anyhow!("no job without a result"))?,
             };
-            Ok((jobs::wait(&dir, Duration::from_secs(timeout))?, 0))
+            let mut v = jobs::wait(&dir, Duration::from_secs(timeout))?;
+            // The answer of the command the job ran: its summary and next steps.
+            let kind = jobs::kind_of(&dir);
+            hints::annotate(&kind, &mut v);
+            Ok((v.clone(), exit_code(&kind, &v, false)))
         }
         Cmd::Time {
             test,
@@ -428,46 +466,50 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 from_check,
                 from_times,
             }) => {
-                if let Some(job) = from_check {
-                    return Ok((
-                        ledger::add_from_check(
-                            &ws,
-                            &store,
-                            &job,
-                            &kind,
-                            &status,
-                            &change,
-                            reason.as_deref(),
-                        )?,
-                        0,
-                    ));
-                }
-                let test =
-                    test.ok_or_else(|| anyhow::anyhow!("--test is needed (or --from-check)"))?;
-                // One name per test, as `record` and `check` write it.
-                let test = probe::resolve(&ws, &store, &test)?.to_string();
-                let (mut before, mut after, mut reason) = (before, after, reason);
-                if from_times {
-                    let (b, a, note) = ledger::from_times(&store, &test)?;
-                    before = before.or(Some(b));
-                    after = after.or(Some(a));
-                    reason = match (reason, note) {
-                        (Some(r), Some(n)) => Some(format!("{r}; {n}")),
-                        (r, n) => r.or(n),
+                let mut v = if let Some(job) = from_check {
+                    ledger::add_from_check(
+                        &ws,
+                        &store,
+                        &job,
+                        kind.as_deref(),
+                        &status,
+                        &change,
+                        reason.as_deref(),
+                    )?
+                } else {
+                    let test =
+                        test.ok_or_else(|| anyhow::anyhow!("--test is needed (or --from-check)"))?;
+                    // One name per test, as `record` and `check` write it.
+                    let test = probe::resolve(&ws, &store, &test)?.to_string();
+                    let (mut before, mut after, mut reason) = (before, after, reason);
+                    if from_times {
+                        let (b, a, note) = ledger::from_times(&store, &test)?;
+                        before = before.or(Some(b));
+                        after = after.or(Some(a));
+                        reason = match (reason, note) {
+                            (Some(r), Some(n)) => Some(format!("{r}; {n}")),
+                            (r, n) => r.or(n),
+                        };
+                    }
+                    let reason = reason.ok_or_else(|| anyhow::anyhow!("--reason is needed"))?;
+                    let kind = ledger::kind_for(&store, &test, kind.as_deref(), &change)?;
+                    let entry = ledger::Add {
+                        test,
+                        kind,
+                        status,
+                        change,
+                        before_s: before,
+                        after_s: after,
+                        threads,
+                        reason,
                     };
-                }
-                let reason = reason.ok_or_else(|| anyhow::anyhow!("--reason is needed"))?;
-                let entry = ledger::Add {
-                    test,
-                    kind,
-                    status,
-                    change,
-                    before_s: before,
-                    after_s: after,
-                    threads,
-                    reason,
+                    ledger::add(&ws, &store, entry)?
                 };
-                Ok((ledger::add(&ws, &store, entry)?, 0))
+                // Where the ledger stands now, and what to try next.
+                let shown = ledger::show(&store, 3)?;
+                v["totals"] = shown["totals"].clone();
+                v["candidates"] = shown["candidates"].clone();
+                Ok((v, 0))
             }
         },
         Cmd::Env { change } => Ok((
