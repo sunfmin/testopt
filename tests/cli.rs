@@ -451,6 +451,7 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
     let script = format!(
         "export TESTOPT_HOME={home}; \
          {exe} -C {ws} --tmux --tmux-session host record > {d}/use.json 2>&1; echo $? > {d}/use.code; \
+         {exe} -C {ws} --tmux --tmux-session jobs --wait-timeout 120 record -E 'test(fast_adds)' > {d}/job.json 2>/dev/null; echo $? > {d}/job.code; \
          {exe} -C {ws} --tmux-session host tmux-kill > {d}/kill.json 2>&1; echo $? > {d}/kill.code; \
          {exe} -C {ws} --tmux-session other tmux-kill > {d}/other.json 2>&1; echo $? > {d}/other.code; \
          sleep 60",
@@ -506,6 +507,26 @@ fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
         read("other.json")
     );
     assert!(!other_alive);
+    // A job in another session runs, from its own copy of testopt.
+    assert_eq!(read("job.code").trim(), "0", "{}", read("job.json"));
+    let job: Value = serde_json::from_str(&read("job.json")).unwrap();
+    assert_eq!(job["tests"], 1, "{job:#}");
+    let jobs = std::fs::read_dir(
+        fx.home
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("jobs"),
+    )
+    .unwrap();
+    let copies = jobs
+        .flatten()
+        .filter(|j| j.path().join("testopt").is_file())
+        .count();
+    assert_eq!(copies, 1);
 }
 
 #[test]

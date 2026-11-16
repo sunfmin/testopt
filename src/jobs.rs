@@ -142,7 +142,11 @@ pub fn start_in_tmux(
         }
     }
     std::fs::write(job.dir.join("env.sh"), env)?;
-    let exe = std::env::current_exe()?;
+    // The job runs its own copy of testopt: a new file, so a rebuild or
+    // reinstall while it runs replaces nothing it is executing (a binary
+    // overwritten in place is killed by macOS as it next runs).
+    let exe = job.dir.join("testopt");
+    std::fs::copy(std::env::current_exe()?, &exe)?;
     let mut cmd = vec![
         shell_quote(&exe.to_string_lossy()),
         "--job".into(),
