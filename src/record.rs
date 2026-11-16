@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::host::{Load, hostname, now_rfc3339};
 use crate::jobs::Job;
 use crate::nextest::{self, Spec, TestTime};
-use crate::source::Sources;
+use crate::source::Index;
 use crate::store::Store;
 use crate::workspace::{Workspace, commit};
 
@@ -154,7 +154,7 @@ pub fn round(x: f64) -> f64 {
 /// Maps tests to the file and line of their function.
 pub struct Locator<'a> {
     ws: &'a Workspace,
-    by_binary: HashMap<String, Sources>,
+    by_binary: HashMap<String, Index>,
 }
 
 impl<'a> Locator<'a> {
@@ -170,14 +170,9 @@ impl<'a> Locator<'a> {
         let sources = self
             .by_binary
             .entry(t.binary_id.clone())
-            .or_insert_with(|| Sources::of(&ws.sources_of(&t.binary_id)));
-        let d = sources.test_fn(t)?;
-        Some((
-            ws.relative(&sources.files[d.file].path)
-                .display()
-                .to_string(),
-            d.line,
-        ))
+            .or_insert_with(|| Index::of_binary(ws, &t.binary_id));
+        let (path, line, _generated) = sources.locate(t)?;
+        Some((ws.relative(path).display().to_string(), line))
     }
 }
 

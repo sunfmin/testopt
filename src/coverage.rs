@@ -22,7 +22,7 @@ use std::process::Command;
 
 use crate::nextest::{self, Spec, TestId};
 use crate::record::round;
-use crate::source::{SourceFile, Sources, test_code_lines};
+use crate::source::{Index, test_code_lines};
 use crate::store::{Store, test_key, write_json};
 use crate::workspace::{Workspace, fnv, rust_files};
 
@@ -477,11 +477,9 @@ impl TestCode {
             return true;
         }
         let mut cache = self.ranges.lock().unwrap();
-        let ranges = cache.entry(rel.to_string()).or_insert_with(|| {
-            SourceFile::load(&self.root.join(rel))
-                .map(|f| test_code_lines(&f))
-                .unwrap_or_default()
-        });
+        let ranges = cache
+            .entry(rel.to_string())
+            .or_insert_with(|| test_code_lines(&self.root.join(rel)));
         ranges
             .iter()
             .any(|(a, b)| (*a..=*b).contains(&(line as usize)))
@@ -952,19 +950,17 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
     let deleted: Vec<&TestId> = base_tests.difference(&head_tests).collect();
     let added: Vec<&TestId> = head_tests.difference(&base_tests).collect();
     let mut changed = vec![];
-    let mut base_src: HashMap<String, Sources> = HashMap::new();
-    let mut head_src: HashMap<String, Sources> = HashMap::new();
+    let mut base_src: HashMap<String, Index> = HashMap::new();
+    let mut head_src: HashMap<String, Index> = HashMap::new();
     for id in base_tests.intersection(&head_tests) {
         let b = base_src
             .entry(id.binary_id.clone())
-            .or_insert_with(|| Sources::of(&base_ws.sources_of(&id.binary_id)));
+            .or_insert_with(|| Index::of_binary(&base_ws, &id.binary_id));
         let h = head_src
             .entry(id.binary_id.clone())
-            .or_insert_with(|| Sources::of(&ws.sources_of(&id.binary_id)));
-        let body = |s: &Sources| {
-            s.test_fn(id)
-                .map(|d| s.files[d.file].raw[d.body.0..d.body.1].to_string())
-        };
+            .or_insert_with(|| Index::of_binary(ws, &id.binary_id));
+        // Compared as tokens: a change of layout alone is no change.
+        let body = |s: &Index| s.test_fn(id).map(Index::body_tokens);
         if body(b) != body(h) {
             changed.push(id.clone());
         }
@@ -1208,7 +1204,7 @@ fn auto_scope<'a>(
 }
 
 fn source_holds_tests(path: &Path) -> bool {
-    SourceFile::load(path).is_some_and(|f| !test_code_lines(&f).is_empty())
+    !test_code_lines(path).is_empty()
 }
 
 #[cfg(test)]

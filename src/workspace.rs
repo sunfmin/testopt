@@ -90,36 +90,6 @@ impl Workspace {
         self.packages.iter().find(|p| p.name == name)
     }
 
-    /// Source files of the target a binary id builds, then the rest of its
-    /// package: where a test's function and its helpers are looked for.
-    pub fn sources_of(&self, binary_id: &str) -> Vec<PathBuf> {
-        let Some(pkg) = self.package_of(binary_id) else {
-            return vec![];
-        };
-        let mut files = rust_files(&pkg.dir);
-        // The binary's own target directory first, so a name defined in
-        // several targets resolves to the one the test is built from.
-        let rest = binary_id.split_once("::").map(|(_, r)| r);
-        let own_dir = match rest {
-            Some(r) => {
-                let target = r.trim_start_matches("bin/");
-                pkg.targets
-                    .iter()
-                    .find(|t| t.name == target)
-                    .and_then(|t| t.src_path.parent().map(Path::to_path_buf))
-            }
-            None => pkg
-                .targets
-                .iter()
-                .find(|t| t.kind == "lib" || t.kind == "proc-macro")
-                .and_then(|t| t.src_path.parent().map(Path::to_path_buf)),
-        };
-        if let Some(own) = own_dir {
-            files.sort_by_key(|f| !f.starts_with(&own));
-        }
-        files
-    }
-
     pub fn relative<'a>(&self, path: &'a Path) -> &'a Path {
         path.strip_prefix(&self.root).unwrap_or(path)
     }

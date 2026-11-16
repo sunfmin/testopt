@@ -194,6 +194,7 @@ pub fn why(
             "functions_read": scan.as_ref().map(|s| s.functions_read),
             "waits": waits.iter().filter(|w| w.seconds.is_some_and(|s| s >= 0.05) || w.in_loop).take(40).collect::<Vec<_>>(),
             "polls": scan.as_ref().map(|s| s.polls.clone()),
+            "unparsed": scan.as_ref().map(|s| s.unparsed.clone()),
         },
     }))
 }

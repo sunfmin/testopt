@@ -433,9 +433,12 @@ dependencies = [
  "clap",
  "jiff",
  "libc",
+ "proc-macro2",
  "quick-xml",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
  "toml",
 ]
