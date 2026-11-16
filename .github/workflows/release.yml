@@ -24,7 +24,9 @@ permissions:
 jobs:
   release:
     name: release
-    runs-on: macos-14
+    # The runner CI also tests on: GitHub retired macos-14 (its configuration
+    # "is not supported", and a job asking for it is cancelled at once).
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
