@@ -133,7 +133,7 @@ All the kinds that apply are listed with their evidence.
 ### How `covers` and `check` measure coverage per test
 
 `cargo llvm-cov show-env --branch` gives the instrumented build's
-environment, and those builds go to `<target>/testopt-cov`. nextest runs
+environment, and those builds go to `<target>/testopt-cov/<hash of the compiler flags>` (cargo does not fingerprint flags passed through cargo-llvm-cov's rustc wrapper, so a build made with other flags would otherwise look fresh). nextest runs
 each test in its own process, through a target runner. testopt is that
 runner: it gives each test its own `LLVM_PROFILE_FILE` directory (nextest
 names the test in `NEXTEST_BINARY_ID` / `NEXTEST_TEST_NAME`). Processes the

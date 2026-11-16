@@ -42,7 +42,7 @@ pub fn arm_line(unit: u32) -> u32 {
 
 /// The cache's format: a tree's coverage measured before it changed is
 /// measured again.
-const FORMAT: &str = "v2-branches";
+const FORMAT: &str = "v3-flags-dir";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Covered {
@@ -148,8 +148,11 @@ fn llvm_tool(ws: &Workspace, tool: &str) -> Result<PathBuf> {
 }
 
 /// The environment of an instrumented build, from `cargo llvm-cov show-env`,
-/// building into `target_dir`.
-fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<Vec<(String, String)>> {
+/// and the dir it builds into: a dir under `target_dir` named for its
+/// compiler flags. cargo-llvm-cov passes them through its rustc wrapper, which
+/// cargo does not fingerprint, so a build made with other flags (lines only,
+/// say) would look fresh and keep its old instrumentation.
+fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<(Vec<(String, String)>, PathBuf)> {
     // Branch coverage where the toolchain has it (nightly), lines alone otherwise.
     let show = |branch: bool| {
         let mut c = Command::new("cargo");
@@ -184,8 +187,22 @@ fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<Vec<(String, String)>> {
         env.push((k.to_string(), unquote(v)));
     }
     env.retain(|(k, _)| k != "LLVM_PROFILE_FILE");
-    env.push(("CARGO_TARGET_DIR".into(), target_dir.display().to_string()));
-    Ok(env)
+    let flags: String = env
+        .iter()
+        .filter(|(k, _)| k.contains("RUSTFLAGS"))
+        .map(|(k, v)| format!("{k}={v}\n"))
+        .collect();
+    let dir = target_dir.join(format!(
+        "{:012x}",
+        crate::workspace::fnv(flags.as_bytes()) & 0xffff_ffff_ffff
+    ));
+    env.retain(|(k, _)| k != "CARGO_TARGET_DIR" && k != "CARGO_LLVM_COV_TARGET_DIR");
+    env.push(("CARGO_TARGET_DIR".into(), dir.display().to_string()));
+    env.push((
+        "CARGO_LLVM_COV_TARGET_DIR".into(),
+        dir.display().to_string(),
+    ));
+    Ok((env, dir))
 }
 
 /// Undoes sh single-quoting: `'a'\''b'` → `a'b`.
@@ -247,7 +264,8 @@ pub fn collect(
     let tree = tree_key(ws);
     let cache = cache_dir(store, &tree);
     std::fs::create_dir_all(&cache)?;
-    let mut env = cov_env(ws, cov_target)?;
+    let (mut env, cov_target) = cov_env(ws, cov_target)?;
+    let cov_target = cov_target.as_path();
     // Every instrumented process writes a profile: build scripts, listings,
     // anything not run as a test. Those go to the store, not the target's
     // tree (the per-test runner overrides this for each test's own).
