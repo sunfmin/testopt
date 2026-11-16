@@ -79,31 +79,47 @@ pub fn threads(ws: &Workspace, profile: &str, explicit: Option<usize>) -> usize 
     if let Some(n) = std::env::var("NEXTEST_TEST_THREADS").ok().and_then(|v| parse_threads(&v, cores)) {
         return n;
     }
-    let config: toml::Table = std::fs::read_to_string(ws.root.join(".config/nextest.toml"))
-        .ok()
-        .and_then(|t| t.parse().ok())
-        .unwrap_or_default();
-    let profiles = config.get("profile").and_then(|p| p.as_table());
+    let parsed = match profile_setting(ws, profile, &["test-threads"]) {
+        Some(toml::Value::Integer(i)) => parse_threads(&i.to_string(), cores),
+        Some(toml::Value::String(s)) => parse_threads(&s, cores),
+        _ => None,
+    };
+    parsed.unwrap_or(cores)
+}
+
+/// A setting of `profile` in the repo's `.config/nextest.toml`, following
+/// `inherits` and then `default`, as nextest does.
+fn profile_setting(ws: &Workspace, profile: &str, path: &[&str]) -> Option<toml::Value> {
+    let config: toml::Table =
+        std::fs::read_to_string(ws.root.join(".config/nextest.toml")).ok().and_then(|t| t.parse().ok())?;
+    let profiles = config.get("profile")?.as_table()?;
     let mut name = profile.to_string();
     for _ in 0..8 {
-        let Some(p) = profiles.and_then(|ps| ps.get(&name)).and_then(|p| p.as_table()) else { break };
-        if let Some(v) = p.get("test-threads") {
-            let parsed = match v {
-                toml::Value::Integer(i) => parse_threads(&i.to_string(), cores),
-                toml::Value::String(s) => parse_threads(s, cores),
-                _ => None,
-            };
-            if let Some(n) = parsed {
-                return n;
+        if let Some(p) = profiles.get(&name).and_then(|p| p.as_table()) {
+            let mut v: Option<&toml::Value> = None;
+            let mut table = Some(p);
+            for (i, key) in path.iter().enumerate() {
+                let got = table.and_then(|t| t.get(*key));
+                if i + 1 == path.len() {
+                    v = got;
+                } else {
+                    table = got.and_then(|g| g.as_table());
+                }
+            }
+            if let Some(v) = v {
+                return Some(v.clone());
+            }
+            if let Some(parent) = p.get("inherits").and_then(|v| v.as_str()) {
+                name = parent.to_string();
+                continue;
             }
         }
-        match p.get("inherits").and_then(|v| v.as_str()) {
-            Some(parent) => name = parent.to_string(),
-            None if name != "default" => name = "default".into(),
-            None => break,
+        if name == "default" {
+            return None;
         }
+        name = "default".into();
     }
-    cores
+    None
 }
 
 fn parse_threads(v: &str, cores: usize) -> Option<usize> {
@@ -135,7 +151,7 @@ fn nextest_store(ws: &Workspace) -> PathBuf {
 /// What to run.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
-    /// The caller's nextest profile, which testopt's own profile inherits.
+    /// The nextest profile to run under.
     pub profile: String,
     pub filter: Option<String>,
     pub threads: Option<usize>,
@@ -163,6 +179,8 @@ pub struct Running {
     child: Child,
     started: Instant,
     junit: PathBuf,
+    /// Whether testopt named the JUnit file (and so removes it).
+    owned_junit: bool,
     tool_dir: PathBuf,
     reader: std::thread::JoinHandle<Option<String>>,
     progress: Arc<Mutex<Progress>>,
@@ -201,8 +219,8 @@ impl Running {
             vec![]
         };
         let _ = std::fs::remove_dir_all(&self.tool_dir);
-        if let Some(dir) = self.junit.parent() {
-            let _ = std::fs::remove_dir_all(dir);
+        if self.owned_junit {
+            let _ = std::fs::remove_file(&self.junit);
         }
         if tests.is_empty() && !status.success() {
             bail!("nextest failed before running any test (exit {status}); see its log");
@@ -213,19 +231,21 @@ impl Running {
 
 /// Starts `cargo nextest run` in `ws` per `spec`.
 pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
-    // A profile per process, so concurrent testopt runs do not share a JUnit file.
-    let profile = format!("testopt:r{}", std::process::id());
+    // nextest lets a tool's config set what the repo's leaves unset, but not
+    // define a profile inheriting one of the repo's: so the run uses the
+    // caller's profile as it is, and the tool config turns its JUnit output
+    // on, in a file named for this process so concurrent runs do not share
+    // one. Where the repo already writes JUnit for that profile, its file is
+    // the one read.
+    let profile = if spec.profile.is_empty() { "default" } else { &spec.profile };
     let tool_dir = std::env::temp_dir().join(format!("testopt-tool-{}", std::process::id()));
     std::fs::create_dir_all(&tool_dir)?;
     let tool_config = tool_dir.join("nextest.toml");
-    let base = if spec.profile.is_empty() { "default" } else { &spec.profile };
-    std::fs::write(
-        &tool_config,
-        format!(
-            "[profile.\"{profile}\"]\ninherits = \"{base}\"\nfail-fast = false\n\n[profile.\"{profile}\".junit]\npath = \"junit.xml\"\n"
-        ),
-    )?;
-    let junit = nextest_store(ws).join(&profile).join("junit.xml");
+    let own_name = format!("testopt-{}.xml", std::process::id());
+    std::fs::write(&tool_config, format!("[profile.\"{profile}\".junit]\npath = \"{own_name}\"\n"))?;
+    let repo_junit = profile_setting(ws, profile, &["junit", "path"]).and_then(|v| v.as_str().map(str::to_string));
+    let owned = repo_junit.is_none();
+    let junit = nextest_store(ws).join(profile).join(repo_junit.unwrap_or(own_name));
     let _ = std::fs::remove_file(&junit);
 
     let mut cmd = Command::new("cargo");
@@ -233,7 +253,7 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
         .args(["nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"])
         .arg("--tool-config-file")
         .arg(format!("testopt:{}", tool_config.display()))
-        .args(["--profile", &profile]);
+        .args(["--profile", profile]);
     if let Some(f) = &spec.filter {
         cmd.args(["-E", f]);
     }
@@ -300,7 +320,7 @@ pub fn start(ws: &Workspace, spec: &Spec) -> Result<Running> {
         }
         summary
     });
-    Ok(Running { child, started, junit, tool_dir, reader, progress, progress_path })
+    Ok(Running { child, started, junit, owned_junit: owned, tool_dir, reader, progress, progress_path })
 }
 
 pub fn run(ws: &Workspace, spec: &Spec) -> Result<Outcome> {

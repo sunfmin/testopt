@@ -56,6 +56,8 @@ impl Fixture {
             .args(["-C", self.root.to_str().unwrap()])
             .args(args)
             .env("TESTOPT_HOME", &self.home)
+            // These tests run under nextest, which says its own threads here.
+            .env_remove("NEXTEST_TEST_THREADS")
             .output()
             .unwrap();
         let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
@@ -105,10 +107,15 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     assert_eq!(rank["tests"][0]["at"], "tests/it.rs:10");
     assert_eq!(rank["files"][0]["file"], "tests/it.rs");
 
-    // A second run gives a trend and each test's previous time.
+    // Under a profile of the repo's own: its thread count, its settings.
+    let slow = fx.ok(&["record", "--profile", "slow", "-E", "test(fast_adds)"]);
+    assert_eq!(slow["threads"], 3, "{slow:#}");
+    assert_eq!(slow["tests"], 1, "{slow:#}");
+
+    // Later runs give a trend and each test's previous time.
     fx.ok(&["record", "-E", "test(sleeps)"]);
     let rank = fx.ok(&["rank"]);
-    assert_eq!(rank["trend"].as_array().unwrap().len(), 2);
+    assert_eq!(rank["trend"].as_array().unwrap().len(), 3);
     assert!(rank["tests"][0]["previous_s"].is_number(), "{rank:#}");
 }
 

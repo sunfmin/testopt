@@ -58,7 +58,7 @@ enum Cmd {
         /// A nextest filter expression.
         #[arg(short = 'E', long = "expr")]
         expr: Option<String>,
-        /// The nextest profile to run under (testopt's own profile inherits it).
+        /// The nextest profile to run under.
         #[arg(long, default_value = "default")]
         profile: String,
         #[arg(long)]

@@ -1,0 +1,4 @@
+# A profile of the repo's own, as afkconvoy has: testopt runs under it as it is.
+[profile.slow]
+test-threads = 3
+fail-fast = false
