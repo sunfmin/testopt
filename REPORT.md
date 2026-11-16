@@ -441,8 +441,12 @@ commits were safe, and the work resumed in session `testopt-agent`.
 - Linux CI failures:
   - CPU time now comes from `/proc/<pid>/schedstat`.
   - nextest's colour output under CI is now handled.
-- On the macOS CI runner, one fixture test assumed which of two close
-  tests ranked first. It now checks the ordering, not the winner.
+- On the macOS CI runner, `spawns_processes` (1.573 s) outran `sleeps`
+  (1.567 s). Fixture tests had assumed `sleeps` ranks first, in four
+  places. Each now finds its test by name.
+  - **The check:** the fixture was made to spawn 8 × 0.25 s, so
+    `spawns_processes` led. The only failures left were the two tests
+    that count its 6 spawns. The fixture was then restored.
 
 ## What is not done, and limits
 
