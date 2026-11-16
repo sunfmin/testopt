@@ -125,26 +125,8 @@ pub fn why(
         .map(|p| p.start)
         .fold(f64::INFINITY, f64::min);
 
-    // Fixed waits the run can have spent: a sleep outside a loop no longer
-    // than the test itself (a longer one was cut short, e.g. by a limit),
-    // times the call sites reaching it; and a limit the test ran up to — one
-    // from half to all of its time is one it waited out.
     let all_waits = scan.as_ref().map(|s| s.waits.clone()).unwrap_or_default();
-    let mut cited = vec![];
-    let mut fixed = 0.0;
-    for w in &all_waits {
-        let Some(s) = w.seconds else { continue };
-        let total = s * w.reached as f64;
-        let is_sleep = (w.kind == "sleep" || w.kind == "shell-sleep") && !w.in_loop;
-        if is_sleep && s >= 0.05 && total <= wall * 1.05 {
-            fixed += total;
-            cited.push(json!({"at": w.at, "seconds": round(total), "code": w.code, "why": "sleep outside a loop"}));
-        } else if w.kind == "limit" && s >= 0.5 * wall && s <= wall * 1.05 {
-            fixed += s;
-            cited.push(json!({"at": w.at, "seconds": round(s), "code": w.code, "why": "a limit the test ran up to"}));
-        }
-    }
-    let fixed = fixed.min(wall);
+    let (fixed, cited) = fixed_wait(&all_waits, wall);
     let polls = scan.as_ref().map(|s| s.polls.len()).unwrap_or(0);
     let mut kinds = vec![];
     if fixed >= 0.25 * wall && fixed >= 0.5 {
@@ -344,4 +326,77 @@ pub fn time(
         ));
     }
     Ok(v)
+}
+
+/// The fixed wait a run of `wall` seconds can have spent, and the waits
+/// counted: a sleep outside a loop no longer than the test (a longer one was
+/// cut short, e.g. by a limit), times the call sites reaching it; and a
+/// limit the test ran up to, one from half to all of its time. Sleeps run
+/// one after another and add up; a limit runs beside them (a sleep is often
+/// there to outlast it), so the wait is the larger of the two, not the sum.
+pub fn fixed_wait(waits: &[source::Wait], wall: f64) -> (f64, Vec<Value>) {
+    let mut cited = vec![];
+    let mut slept = 0.0f64;
+    let mut limit = 0.0f64;
+    for w in waits {
+        let Some(s) = w.seconds else { continue };
+        let total = s * w.reached as f64;
+        let is_sleep = (w.kind == "sleep" || w.kind == "shell-sleep") && !w.in_loop;
+        if is_sleep && s >= 0.05 && total <= wall * 1.05 {
+            slept += total;
+            cited.push(json!({"at": w.at, "seconds": round(total), "code": w.code, "why": "sleep outside a loop"}));
+        } else if w.kind == "limit" && s >= 0.5 * wall && s <= wall * 1.05 {
+            limit = limit.max(s);
+            cited.push(json!({"at": w.at, "seconds": round(s), "code": w.code, "why": "a limit the test ran up to"}));
+        }
+    }
+    (slept.max(limit).min(wall), cited)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wait(kind: &str, seconds: f64, in_loop: bool) -> source::Wait {
+        source::Wait {
+            kind: kind.into(),
+            seconds: Some(seconds),
+            in_loop,
+            repeated: false,
+            at: "t.rs:1".into(),
+            code: String::new(),
+            via: vec![],
+            reached: 1,
+        }
+    }
+
+    #[test]
+    fn a_limit_and_the_sleep_that_outlasts_it_are_one_wait() {
+        // exclusive.rs: gate_seconds: 20 and sleep(21) in a 24.5s test.
+        let (s, cited) = fixed_wait(
+            &[wait("limit", 20.0, false), wait("sleep", 21.0, false)],
+            24.5,
+        );
+        assert_eq!(s, 21.0);
+        assert_eq!(cited.len(), 2);
+        // Sleeps in sequence add up; one in a loop is a poll, not counted.
+        let (s, _) = fixed_wait(
+            &[
+                wait("sleep", 2.0, false),
+                wait("sleep", 3.0, false),
+                wait("sleep", 1.0, true),
+            ],
+            10.0,
+        );
+        assert_eq!(s, 5.0);
+        // A sleep longer than the test was cut short: not counted.
+        let (s, cited) = fixed_wait(
+            &[
+                wait("shell-sleep", 600.0, false),
+                wait("limit", 20.0, false),
+            ],
+            21.3,
+        );
+        assert_eq!((s, cited.len()), (20.0, 1));
+    }
 }
