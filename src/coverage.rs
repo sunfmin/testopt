@@ -197,7 +197,18 @@ pub fn collect(
     let tree = tree_key(ws);
     let cache = cache_dir(store, &tree);
     std::fs::create_dir_all(&cache)?;
-    let env = cov_env(ws, cov_target)?;
+    let mut env = cov_env(ws, cov_target)?;
+    // Every instrumented process writes a profile: build scripts, listings,
+    // anything not run as a test. Those go to the store, not the target's
+    // tree (the per-test runner overrides this for each test's own).
+    env.push((
+        "LLVM_PROFILE_FILE".into(),
+        cache
+            .join("other")
+            .join("%p-%m.profraw")
+            .display()
+            .to_string(),
+    ));
     note(&format!(
         "coverage: listing tests (instrumented build into {})",
         cov_target.display()
@@ -228,6 +239,7 @@ pub fn collect(
     }
     let raw = cache.join(format!("raw-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&raw);
+    let _ = std::fs::remove_dir_all(cache.join("other"));
     std::fs::create_dir_all(&raw)?;
     let exe = std::env::current_exe()?;
     let triple = host_triple()?.to_uppercase().replace('-', "_");

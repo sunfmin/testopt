@@ -98,6 +98,27 @@ impl Fixture {
     }
 }
 
+/// Coverage leaves nothing in the target's tree: no stray `.profraw`.
+fn assert_no_profiles(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if e.file_name() != "target" {
+                    stack.push(p);
+                }
+            } else {
+                assert!(
+                    p.extension().is_none_or(|x| x != "profraw"),
+                    "left in the workspace: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+}
+
 fn f(v: &Value) -> f64 {
     v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"))
 }
@@ -218,6 +239,7 @@ fn covers_finds_a_test_whose_lines_another_covers() {
     // running again, and the negative and zero branches are this test's alone.
     assert_eq!(c["compared_with"], 1, "{c:#}");
     assert_eq!(c["covered_by_no_other"], 2, "{c:#}");
+    assert_no_profiles(&fx.root);
 }
 
 #[test]
@@ -250,6 +272,7 @@ fn check_fails_when_a_line_loses_its_only_test_and_passes_otherwise() {
         c["coverage"]["lost_detail"][0]["covered_at_base_by"][0],
         "fixture::it classifies_every_sign"
     );
+    assert_no_profiles(&fx.root);
 }
 
 #[test]
