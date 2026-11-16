@@ -134,6 +134,7 @@ pub fn add_from_check(
     kind: &str,
     status: &str,
     change: &str,
+    note: Option<&str>,
 ) -> Result<Value> {
     let dir = if job == "latest" {
         let mut checks: Vec<std::path::PathBuf> = std::fs::read_dir(store.jobs_dir())?
@@ -193,11 +194,14 @@ pub fn add_from_check(
         let unreliable = [&t["base"], &t["head"]]
             .iter()
             .any(|s| s["reliable"] == false);
-        let reason = if unreliable {
+        let mut reason = if unreliable {
             format!("{verdict}; timed on a loaded host (flagged)")
         } else {
             verdict.clone()
         };
+        if let Some(n) = note {
+            reason = format!("{n}; {reason}");
+        }
         added.push(add(
             ws,
             store,

@@ -430,7 +430,15 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
             }) => {
                 if let Some(job) = from_check {
                     return Ok((
-                        ledger::add_from_check(&ws, &store, &job, &kind, &status, &change)?,
+                        ledger::add_from_check(
+                            &ws,
+                            &store,
+                            &job,
+                            &kind,
+                            &status,
+                            &change,
+                            reason.as_deref(),
+                        )?,
                         0,
                     ));
                 }

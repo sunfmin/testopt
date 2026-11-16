@@ -335,8 +335,17 @@ fn check_fails_when_a_line_loses_its_only_test_and_passes_otherwise() {
         "redundant",
         "--status",
         "kept",
+        "--reason",
+        "a subset of classifies_every_sign",
     ]);
     let e = &l["added"][0]["added"];
+    assert!(
+        e["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("a subset of classifies_every_sign; check "),
+        "{l:#}"
+    );
     assert_eq!(e["test"], "fixture::it classifies_a_positive", "{l:#}");
     assert_eq!(f(&e["after_s"]), 0.0);
     assert!(f(&e["before_s"]) >= 0.0);
@@ -710,17 +719,30 @@ fn status_summaries_and_next_steps_lead_a_session() {
     );
     assert_eq!(rec["next"][0], "testopt rank");
     let rank = fx.ok(&["rank"]);
-    assert_eq!(
-        rank["next"][0], "testopt why 'fixture::it sleeps'",
-        "{rank:#}"
+    // The slowest test: `sleeps` or `spawns_processes`, close on a slow runner.
+    let top = format!(
+        "testopt why '{} {}'",
+        rank["tests"][0]["binary_id"].as_str().unwrap(),
+        rank["tests"][0]["name"].as_str().unwrap()
     );
+    assert_eq!(rank["next"][0], top.as_str(), "{rank:#}");
 
     // The slowest two, surveyed in one job; kept in the store.
     let sv = fx.ok(&["survey", "--top", "2"]);
     assert_eq!(sv["rows"].as_array().unwrap().len(), 2, "{sv:#}");
-    assert_eq!(sv["rows"][0]["test"], "fixture::it sleeps");
-    assert_eq!(sv["rows"][0]["kind"], "fixed-wait");
-    assert_eq!(sv["rows"][1]["kind"], "process-heavy");
+    let kind_of = |rows: &Value, test: &str| -> Value {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["test"] == test)
+            .map(|r| r["kind"].clone())
+            .unwrap_or_else(|| panic!("{test} not in {rows:#}"))
+    };
+    assert_eq!(kind_of(&sv["rows"], "fixture::it sleeps"), "fixed-wait");
+    assert_eq!(
+        kind_of(&sv["rows"], "fixture::it spawns_processes"),
+        "process-heavy"
+    );
     assert!(
         sv["summary"].as_str().unwrap().contains("fixed-wait 1"),
         "{sv:#}"
@@ -739,7 +761,7 @@ fn status_summaries_and_next_steps_lead_a_session() {
 
     let s = fx.ok(&["status"]);
     assert_eq!(s["latest_run"]["of_this_tree"], true, "{s:#}");
-    assert_eq!(s["survey"][0]["kind"], "fixed-wait", "{s:#}");
+    assert_eq!(kind_of(&s["survey"], "fixture::it sleeps"), "fixed-wait");
     assert!(
         s["summary"].as_str().unwrap().contains("of this commit"),
         "{s:#}"
