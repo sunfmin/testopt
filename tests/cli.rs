@@ -167,7 +167,7 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
         f(&rank["tests"][0]["est_wall_saving_s"]),
         (f(&rank["tests"][0]["seconds"]) / 4.0 * 1000.0).round() / 1000.0
     );
-    assert_eq!(rank["tests"][0]["at"], "tests/it.rs:10");
+    assert_eq!(rank["tests"][sleeps]["at"], "tests/it.rs:10");
     assert_eq!(rank["files"][0]["file"], "tests/it.rs");
     // The replayed schedule: 7 tests on 4 slots end with the 1.5s sleep;
     // without it the run ends with the next longest, so it saves the gap.
