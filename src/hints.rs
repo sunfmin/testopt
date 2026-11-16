@@ -139,7 +139,7 @@ pub fn annotate(cmd: &str, v: &mut Value) {
                     }
                 ),
                 vec![format!(
-                    "after a change, time it again, then: testopt ledger add --test {} --from-times --kind <kind> --status kept|rejected",
+                    "after a change, time it again, then: testopt ledger add --test {} --from-times --status kept|rejected --reason '…'",
                     q(test)
                 )],
             )
@@ -157,7 +157,7 @@ pub fn annotate(cmd: &str, v: &mut Value) {
                 + v["arms_taken_by_no_other"].as_u64().unwrap_or(0);
             let mut next = vec![];
             if own == 0 && !within.is_empty() {
-                next.push(format!("delete it (every line and arm is also covered by {}), then: testopt check HEAD", within[0]));
+                next.push(format!("delete it (every line and arm is also covered by {}), then: testopt --tmux check HEAD", within[0]));
             }
             (
                 format!(
@@ -180,7 +180,7 @@ pub fn annotate(cmd: &str, v: &mut Value) {
                 n(&v["tests"]["total_delta_s"])
             ),
             vec![format!(
-                "testopt ledger add --from-check latest --kind <kind> --status {}",
+                "testopt ledger add --from-check latest --status {}",
                 if v["pass"] == true {
                     "kept"
                 } else {
@@ -202,14 +202,16 @@ pub fn annotate(cmd: &str, v: &mut Value) {
                     )
                 })
                 .collect();
+            // What to do about the first fixed wait (the cheapest to remove),
+            // else about the slowest test.
             let first = v["rows"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .find(|r| r["kind"] == "fixed-wait")
                 .or_else(|| v["rows"].get(0))
-                .and_then(|r| r["test"].as_str())
-                .map(|t| format!("testopt why {} --full", q(t)));
+                .and_then(|r| serde_json::from_value::<crate::survey::Row>(r.clone()).ok())
+                .map(|r| crate::survey::step_for(&r.test, Some(&r)));
             (
                 format!("{} tests surveyed: {}", v["tests"], kinds.join(", ")),
                 first.into_iter().collect(),
@@ -217,15 +219,16 @@ pub fn annotate(cmd: &str, v: &mut Value) {
         }
         "ledger" => {
             let t = &v["totals"];
-            let next = v["candidates"][0]["test"]
+            let next = v["candidates"][0]["next"]
                 .as_str()
-                .map(|t| format!("testopt why {}", q(t)))
+                .map(str::to_string)
                 .into_iter()
                 .collect();
             (
                 format!(
-                    "{} entries: {} kept ({} test-s, ≈{}s wall), {} rejected, {} tried",
+                    "{} entries on {} tests, each at its newest: {} kept ({} test-s, ≈{}s wall), {} rejected, {} tried",
                     t["entries"],
+                    t["tests"],
                     t["kept"],
                     t["kept_test_seconds_saved"],
                     t["kept_est_wall_saving_s"],
@@ -233,6 +236,43 @@ pub fn annotate(cmd: &str, v: &mut Value) {
                     t["tried"]
                 ),
                 next,
+            )
+        }
+        "ledger-add" => {
+            // One entry (`added` an object) or one per test a check touched
+            // (`added` a list of `{added, saved_s}`).
+            let entries: Vec<&Value> = match &v["added"] {
+                Value::Array(a) => a.iter().map(|e| &e["added"]).collect(),
+                e => vec![e],
+            };
+            let added: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} {} ({})",
+                        e["status"].as_str().unwrap_or(""),
+                        e["test"].as_str().unwrap_or(""),
+                        e["kind"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            let t = &v["totals"];
+            (
+                format!(
+                    "added {}; ledger: {} tests, {} kept ({} test-s, ≈{}s wall), {} rejected, {} tried",
+                    added.join("; "),
+                    t["tests"],
+                    t["kept"],
+                    t["kept_test_seconds_saved"],
+                    t["kept_est_wall_saving_s"],
+                    t["rejected"],
+                    t["tried"]
+                ),
+                v["candidates"][0]["next"]
+                    .as_str()
+                    .map(str::to_string)
+                    .into_iter()
+                    .collect(),
             )
         }
         _ => return,

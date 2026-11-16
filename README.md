@@ -24,22 +24,27 @@ toolchain; on stable, `covers` and `check` compare lines only.
 ## Commands
 
 Every command prints JSON on stdout and progress on stderr. `-C <dir>`
-names the target workspace (default: the current directory).
+names the target workspace (default: the current directory). An answer
+starts with `summary`, one line, and `next`, the commands that follow
+from it, ready to run. An error is `{"error": …}` with exit 2.
 
 | command | does |
 |---|---|
+| `testopt status` | Where the optimization stands: the latest run (and whether it is of this tree), jobs without a result, the survey, the ledger, the environment, the tools, and the next command. The first command of a session. |
 | `testopt env [set NAME=value… \| unset NAME…]` | The target's environment: what its own gate exports before its tests run. It is kept once in the store and applied to every command. Values may name `{root}` (the workspace root) and `{commit}` (its HEAD). A `TMPDIR` is created if it is missing. |
 | `testopt record [--filter-file F \| -E EXPR] [--profile P] [--test-threads N] [-- nextest args]` | Builds, then runs the tests under the profile and appends the run to the store: per-test JUnit times and start order, commit, host, load at start and end, threads, and nextest's own summary. `--filter-file` reads `<binary-id> <test name>` lines and builds the same filter afkconvoy's `gate.sh` builds. |
 | `testopt rank [--top N] [--run ID]` | The latest run's totals, time bands, tests by time and share, per-file totals, each test's previous time, and the trend across runs. Each test gets two wall savings: `est_wall_saving_s` (seconds / threads) and `replayed_wall_saving_s`. The replayed one comes from running the run's schedule again with and without the test (see below). |
 | `testopt why <test>` | Runs the test alone and says where its time goes (see below). |
 | `testopt time <test> [-n N] [--max-load-per-core X] [--strict]` | Runs it alone N times. Gives the median, min, max and spread of wall time, the CPU seconds of its process tree, and the load before and after each run. When load per core passes X (default 1.0), the result is `"reliable": false` with a `flag`; `--strict` exits 3 instead. CPU seconds move far less with load than wall time does. |
-| `testopt covers <test> [--against EXPR]` | The lines and branch arms the test covers. For every other test measured on the same tree, and those `--against` selects: shared lines and arms, and whether either test is within the other (lines and arms both). Also what no other test covers, and how many profiles no test could be told from. |
+| `testopt survey [--top N]` | `why` on the latest run's N slowest tests, one at a time, as one job: each test's kind, time alone, fixed waits, process range and cited lines. Rows are kept in the store, so the ledger's candidates know their kind. |
+| `testopt covers <test> [--against EXPR] [--peers file\|binary]` | `--peers` also measures the tests of its file or binary, with no filter to write. The lines and branch arms the test covers. For every other test measured on the same tree, and those `--against` selects: shared lines and arms, and whether either test is within the other (lines and arms both). Also what no other test covers, and how many profiles no test could be told from. |
 | `testopt check <base-ref> [--filter-file F \| -E EXPR] [-n N]` | Compares the working tree with base (see below). Exits 1 when a line or branch arm still in the code, covered by some test at base, is covered by none now. Times the deleted, added and changed tests, base and working tree interleaved. |
 | `testopt dash [--once] [--interval S]` | A terminal view for a tmux pane: the newest job's progress and ETA, the latest run's top 10, and the ledger's totals. Redraws itself. |
-| `testopt ledger` | The ledger: every candidate tried, its numbers and reason, its totals, and the next candidates (the latest run's slowest tests not yet in it). |
-| `testopt ledger add --test T --kind K --status kept\|rejected\|tried [--before S --after S \| --from-times] --reason R` | Adds an entry. `--from-times` takes before and after from the test's newest two `time` records, and says so when either was flagged. |
-| `testopt ledger add --from-check JOB\|latest --kind K --status S` | One entry per test a `check` job touched, with the check's timings and verdict. |
+| `testopt ledger` | The ledger: every entry, its numbers and reason; totals over each test's newest entry; and the next candidates (the latest run's slowest tests not yet in it), each with its survey kind and its `next` step. |
+| `testopt ledger add --test T --status kept\|rejected\|tried [--kind K] [--before S --after S \| --from-times] --reason R` | Adds an entry, under the test's full id. `--kind` defaults to the kind `survey` found (or `redundant` for a deleted test). Answers with the ledger's totals and the next candidate. `--from-times` takes before and after from the test's newest two `time` records, and says so when either was flagged. |
+| `testopt ledger add --from-check JOB\|latest --status S [--kind K] [--reason R]` | One entry per test a `check` job touched, with the check's timings and verdict after your reason. |
 | `testopt job [ID]` | A job's progress and result. |
+| `testopt wait [ID] [--timeout S]` | Waits for a job (the newest without a result, by default), with a progress line every 30 s, and answers as the command it ran. |
 | `testopt tmux-kill [--tmux-session NAME]` | Kills the job session, but never the session testopt runs inside. |
 
 A test is named `<binary-id> <name>` as nextest lists it, or by its name
@@ -198,17 +203,22 @@ it.
 
 ## tmux
 
-`--tmux` (on `record` and `check`) runs the job in a window of the job
+`--tmux`, on any command that runs tests (`record`, `check`, `survey`,
+`covers`, `time`, `why`), runs it as a job in a window of the job
 session (`--tmux-session`, default `testopt`). The caller waits on the
 job's `result.json`, never on the pane:
 
 - window `dash`: `testopt dash` for the workspace, made with the session.
 - window `run-<job id>`: the job, run by its own copy of testopt. It stays
-  open after the job ends, until Enter is pressed.
+  open for 60 s after the job succeeds, and until Enter after it fails.
+  The exit code is shown.
+
+`--tmux` on a command that returns at once (`rank`, `ledger`, …) is an
+error, not a silent foreground run.
 
 The window gets the caller's environment through a script in the job's
 directory. `--detach` returns the job id at once, and `testopt job` reads
-it later. `--wait-timeout` bounds the wait (default 3 h). After that the
+it later; `testopt wait` waits for it. `--wait-timeout` bounds the wait (default 3 h). After that the
 job keeps running and the caller gets an error naming it.
 
 ```sh
@@ -229,22 +239,22 @@ session.
    `testopt --tmux record --filter-file .config/slow-tests --profile slow`
 2. **Rank**: `testopt rank --top 30`. Sort by `replayed_wall_saving_s`.
    Look at the middle bands too, not only the top.
-3. **Resume**: `testopt ledger` shows what was tried and the next untried
-   candidates.
-4. **Why**: `testopt why <test>`, for its kind, seconds, cited lines and
-   process range.
+3. **Resume**: `testopt status`, then `testopt ledger`: what was tried,
+   and the next untried candidates with their `next` step.
+4. **Why**: `testopt --tmux survey --top 20` once, or `testopt why <test>`,
+   for each test's kind, seconds, cited lines and process range.
 5. **Change** the test:
    - replace a fixed sleep with a wait on the condition;
    - reduce poll rounds;
    - spawn fewer processes;
    - or delete one of two tests that cover the same lines and arms
-     (`testopt covers <test> --against …`).
+     (`testopt --tmux covers <test> --peers file`).
 6. **Measure**:
    - `testopt time <test> -n 5`, before and after. Compare CPU seconds when
      the host is loaded, and wall times only when neither is flagged.
    - `testopt check <base>`. It must pass: no line or arm loses its only
      test.
-7. **Ledger**: `testopt ledger add --from-check latest --kind … --status kept|rejected`.
+7. **Ledger**: `testopt ledger add --from-check latest --status kept|rejected`.
    Then go to 3.
 
 ## Develop

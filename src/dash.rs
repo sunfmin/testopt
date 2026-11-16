@@ -137,8 +137,8 @@ pub fn frame(ws: &Workspace, store: &Store) -> String {
     let t = totals(&entries);
     let _ = writeln!(
         s,
-        "ledger: {} entries — {} kept, {} rejected, {} tried; kept saves {} test-s ≈ {} s wall",
-        t["entries"],
+        "ledger: {} tests — {} kept, {} rejected, {} tried; kept saves {} test-s ≈ {} s wall",
+        t["tests"],
         t["kept"],
         t["rejected"],
         t["tried"],
