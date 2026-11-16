@@ -41,6 +41,10 @@ pub struct TestTime {
     pub seconds: f64,
     /// pass | fail | skip
     pub status: String,
+    /// When it started, seconds since the epoch (from JUnit's `timestamp`):
+    /// the order the run started tests in, for replaying its schedule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f64>,
 }
 
 impl TestTime {
@@ -429,12 +433,19 @@ pub fn parse_junit(xml: &str) -> Result<Vec<TestTime>> {
                 let mut name = String::new();
                 let mut class = String::new();
                 let mut time = 0.0;
+                let mut start = None;
                 for a in e.attributes().flatten() {
                     let v = a.unescape_value()?.into_owned();
                     match a.key.as_ref() {
                         b"name" => name = v,
                         b"classname" => class = v,
                         b"time" => time = v.parse().unwrap_or(0.0),
+                        b"timestamp" => {
+                            start = v
+                                .parse::<jiff::Timestamp>()
+                                .ok()
+                                .map(|t| t.as_millisecond() as f64 / 1000.0)
+                        }
                         _ => {}
                     }
                 }
@@ -443,6 +454,7 @@ pub fn parse_junit(xml: &str) -> Result<Vec<TestTime>> {
                     name,
                     seconds: time,
                     status: "pass".into(),
+                    start,
                 });
                 in_case = has_children;
             }

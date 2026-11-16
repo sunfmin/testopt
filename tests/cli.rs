@@ -154,6 +154,21 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     );
     assert_eq!(rank["tests"][0]["at"], "tests/it.rs:10");
     assert_eq!(rank["files"][0]["file"], "tests/it.rs");
+    // The replayed schedule: 5 tests on 4 slots end with the 1.5s sleep;
+    // without it the run ends with the next longest, so it saves the gap.
+    assert_eq!(rank["totals"]["replayed_from"], "JUnit start order");
+    let replayed = f(&rank["totals"]["replayed_wall_s"]);
+    assert!(
+        replayed >= 1.5 && replayed <= f(&rank["totals"]["test_seconds"]),
+        "{rank:#}"
+    );
+    let saving = f(&rank["tests"][0]["replayed_wall_saving_s"]);
+    assert!(saving > 0.0 && saving < 1.5, "{rank:#}");
+    assert_eq!(
+        f(&rank["tests"][4]["replayed_wall_saving_s"]),
+        0.0,
+        "{rank:#}"
+    );
 
     // Under a profile of the repo's own: its thread count, its settings.
     let slow = fx.ok(&["record", "--profile", "slow", "-E", "test(fast_adds)"]);

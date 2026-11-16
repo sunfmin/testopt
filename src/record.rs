@@ -200,8 +200,26 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
         .map(|t| ((t.binary_id.clone(), t.name.clone()), t.seconds))
         .collect();
     let mut tests: Vec<&TestTime> = run.tests.iter().filter(|t| t.status != "skip").collect();
+    // The run's schedule, replayed: tests in the order they started (JUnit
+    // timestamps; the file's order where a run has none).
+    let mut order: Vec<&TestTime> = tests.clone();
+    order.sort_by(|a, b| a.start.unwrap_or(0.0).total_cmp(&b.start.unwrap_or(0.0)));
+    let has_starts = order.iter().all(|t| t.start.is_some());
+    let durations: Vec<f64> = order.iter().map(|t| t.seconds).collect();
+    let replayed_wall = crate::schedule::wall(&durations, run.threads);
+    let position: HashMap<(&str, &str), usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, t)| ((t.binary_id.as_str(), t.name.as_str()), i))
+        .collect();
     tests.sort_by(|a, b| b.seconds.total_cmp(&a.seconds));
     let mut loc = Locator::new(ws);
+    let top_idx: Vec<usize> = tests
+        .iter()
+        .take(top)
+        .map(|t| position[&(t.binary_id.as_str(), t.name.as_str())])
+        .collect();
+    let replayed_savings = crate::schedule::savings(&durations, run.threads, &top_idx);
 
     let mut bands = vec![];
     for (label, lo, hi) in [
@@ -238,6 +256,7 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
                 "seconds": round(t.seconds),
                 "share": round(t.seconds / total.max(1e-9)),
                 "est_wall_saving_s": round(t.seconds / threads),
+                "replayed_wall_saving_s": round(replayed_savings[i]),
                 "at": at.map(|(f, l)| format!("{f}:{l}")),
                 "status": t.status,
                 "previous_s": prev.map(|p| round(*p)),
@@ -280,6 +299,8 @@ pub fn rank(ws: &Workspace, store: &Store, top: usize, run_id: Option<&str>) -> 
             "wall_s": round(run.wall_s),
             "threads": run.threads,
             "test_seconds_over_threads": round(total / threads),
+            "replayed_wall_s": round(replayed_wall),
+            "replayed_from": if has_starts { "JUnit start order" } else { "file order (no start times recorded)" },
         },
         "bands": bands,
         "tests": ranked,

@@ -11,6 +11,7 @@ mod nextest;
 mod probe;
 mod procs;
 mod record;
+mod schedule;
 mod source;
 mod store;
 mod workspace;
