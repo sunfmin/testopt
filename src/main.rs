@@ -35,6 +35,9 @@ struct Cli {
     /// session and wait on its result file.
     #[arg(long, global = true)]
     tmux: bool,
+    /// The tmux session --tmux puts jobs in (never the one testopt runs inside).
+    #[arg(long, global = true, default_value = "testopt")]
+    tmux_session: String,
     /// With --tmux: how long to wait for the result, in seconds.
     #[arg(long, global = true, default_value_t = 3 * 3600)]
     wait_timeout: u64,
@@ -144,6 +147,8 @@ enum Cmd {
     },
     /// A job's state: the newest, or the one named.
     Job { id: Option<String> },
+    /// Kill the job tmux session (--tmux-session); refuses the one testopt runs in.
+    TmuxKill,
 }
 
 #[derive(Subcommand)]
@@ -196,8 +201,14 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
     let long = matches!(cli.cmd, Cmd::Record { .. } | Cmd::Check { .. });
     if cli.tmux && long {
         let kind = if matches!(cli.cmd, Cmd::Record { .. }) { "record" } else { "check" };
-        let job = jobs::start_in_tmux(&store, &ws.root, kind, raw_args)?;
-        eprintln!("[testopt] job {} started in tmux window testopt:run-{}; waiting on {}", job.id, job.id, job.result_path().display());
+        let job = jobs::start_in_tmux(&store, &ws.root, &cli.tmux_session, kind, raw_args)?;
+        eprintln!(
+            "[testopt] job {} started in tmux window {}:run-{}; waiting on {}",
+            job.id,
+            cli.tmux_session,
+            job.id,
+            job.result_path().display()
+        );
         if cli.detach {
             return Ok((serde_json::json!({"job": job.id, "result": job.result_path()}), 0));
         }
@@ -247,6 +258,7 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 0,
             )),
         },
+        Cmd::TmuxKill => Ok((jobs::kill_session(&cli.tmux_session)?, 0)),
         Cmd::Job { id } => {
             let dir = match id {
                 Some(i) => store.jobs_dir().join(i),

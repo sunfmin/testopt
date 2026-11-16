@@ -233,3 +233,55 @@ fn ledger_keeps_entries_and_names_the_next_candidates() {
     assert!(frame.contains("1 kept, 1 rejected"), "{frame}");
     assert!(frame.contains("finished"), "{frame}");
 }
+
+/// testopt run from inside a tmux session never kills, replaces or fills
+/// that session (on 2026-11-16 a `tmux kill-session -t testopt` run from
+/// inside the agent's own session `testopt` ended the agent). On a private
+/// tmux server, so no real session is touched.
+#[test]
+fn refuses_to_use_or_kill_the_tmux_session_it_runs_inside() {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("tmux not installed: skipped");
+        return;
+    }
+    let fx = Fixture::new();
+    let dir = tempfile::Builder::new().prefix("tx").tempdir_in("/tmp").unwrap();
+    let sock = dir.path().join("s");
+    let tmux = |args: &[&str]| Command::new("tmux").arg("-S").arg(&sock).args(args).output().unwrap();
+    let exe = env!("CARGO_BIN_EXE_testopt");
+    let d = dir.path().display();
+    let ws = fx.root.display();
+    let script = format!(
+        "export TESTOPT_HOME={home}; \
+         {exe} -C {ws} --tmux --tmux-session host record > {d}/use.json 2>&1; echo $? > {d}/use.code; \
+         {exe} -C {ws} --tmux-session host tmux-kill > {d}/kill.json 2>&1; echo $? > {d}/kill.code; \
+         {exe} -C {ws} --tmux-session other tmux-kill > {d}/other.json 2>&1; echo $? > {d}/other.code; \
+         sleep 60",
+        home = fx.home.display()
+    );
+    assert!(tmux(&["new-session", "-d", "-s", "other", "sleep 60"]).status.success());
+    assert!(tmux(&["new-session", "-d", "-s", "host", "sh", "-c", &script]).status.success());
+    let other_code = dir.path().join("other.code");
+    for _ in 0..300 {
+        if other_code.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let read = |f: &str| std::fs::read_to_string(dir.path().join(f)).unwrap_or_default();
+    let host_alive = tmux(&["has-session", "-t", "=host"]).status.success();
+    let other_alive = tmux(&["has-session", "-t", "=other"]).status.success();
+    let windows = String::from_utf8_lossy(&tmux(&["list-windows", "-t", "=host", "-F", "#W"]).stdout).into_owned();
+    tmux(&["kill-server"]);
+
+    assert_eq!(read("use.code").trim(), "2", "{}", read("use.json"));
+    assert!(read("use.json").contains("refusing to use tmux session `host`"), "{}", read("use.json"));
+    assert_eq!(read("kill.code").trim(), "2", "{}", read("kill.json"));
+    assert!(read("kill.json").contains("refusing"), "{}", read("kill.json"));
+    assert!(host_alive, "the session testopt ran in was killed");
+    assert!(!windows.contains("run-"), "a job window was put in the caller's session: {windows}");
+    // Another session it may kill.
+    assert_eq!(read("other.code").trim(), "0", "{}", read("other.json"));
+    assert!(read("other.json").contains("\"killed\": true"), "{}", read("other.json"));
+    assert!(!other_alive);
+}

@@ -73,10 +73,41 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Starts this same command, without `--tmux`, in a new window of the
-/// `testopt` tmux session (making the session, with its `dash` window, if
-/// there is none), and returns the job directory to wait on.
-pub fn start_in_tmux(store: &Store, ws_root: &Path, kind: &str, args: &[String]) -> Result<Job> {
+/// The tmux session this process runs inside, if any.
+pub fn own_session() -> Option<String> {
+    std::env::var_os("TMUX")?;
+    let out = Command::new("tmux").args(["display-message", "-p", "#S"]).output().ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
+}
+
+/// Refuses to touch `session` when it is the one this process runs in: a
+/// caller inside tmux (an agent, a human's shell) must never have its own
+/// session killed, replaced, or filled with job windows by testopt.
+pub fn guard_session(session: &str) -> Result<()> {
+    if let Some(own) = own_session()
+        && own == session
+    {
+        bail!(
+            "refusing to use tmux session `{session}`: testopt is running inside it, and killing or reusing it would take the caller down; pass --tmux-session <another name>"
+        );
+    }
+    Ok(())
+}
+
+/// Kills the job session `session`, never the one this process runs in.
+pub fn kill_session(session: &str) -> Result<serde_json::Value> {
+    guard_session(session)?;
+    let st = Command::new("tmux").args(["kill-session", "-t", &format!("={session}")]).output()?;
+    Ok(serde_json::json!({"session": session, "killed": st.status.success()}))
+}
+
+/// Starts this same command, without `--tmux`, in a new window of the job
+/// tmux session `session` (making it, with its `dash` window, if there is
+/// none), and returns the job directory to wait on. Refuses when `session`
+/// is the session this process runs in.
+pub fn start_in_tmux(store: &Store, ws_root: &Path, session: &str, kind: &str, args: &[String]) -> Result<Job> {
+    guard_session(session)?;
     let id = new_id(kind);
     let job = Job::open(store, &id)?;
     // The window runs under the tmux server's environment, not ours: carry
@@ -97,7 +128,7 @@ pub fn start_in_tmux(store: &Store, ws_root: &Path, kind: &str, args: &[String])
         shell_quote(&ws_root.to_string_lossy()),
         cmd.join(" ")
     );
-    let has = Command::new("tmux").args(["has-session", "-t", "testopt"]).output().context("running tmux")?;
+    let has = Command::new("tmux").args(["has-session", "-t", &format!("={session}")]).output().context("running tmux")?;
     if !has.status.success() {
         let dash = format!(
             ". {}; cd {}; {} dash",
@@ -106,14 +137,14 @@ pub fn start_in_tmux(store: &Store, ws_root: &Path, kind: &str, args: &[String])
             shell_quote(&exe.to_string_lossy())
         );
         let st = Command::new("tmux")
-            .args(["new-session", "-d", "-s", "testopt", "-n", "dash", "-x", "160", "-y", "48", "sh", "-c", &dash])
+            .args(["new-session", "-d", "-s", session, "-n", "dash", "-x", "160", "-y", "48", "sh", "-c", &dash])
             .status()?;
         if !st.success() {
             bail!("tmux new-session failed");
         }
     }
     let st = Command::new("tmux")
-        .args(["new-window", "-d", "-t", "testopt:", "-n", &format!("run-{id}"), "sh", "-c", &script])
+        .args(["new-window", "-d", "-t", &format!("={session}:"), "-n", &format!("run-{id}"), "sh", "-c", &script])
         .status()?;
     if !st.success() {
         bail!("tmux new-window failed");
@@ -137,7 +168,7 @@ pub fn wait(job_dir: &Path, timeout: Duration) -> Result<Value> {
         }
         if began.elapsed() > timeout {
             bail!(
-                "job {} not done after {}s; it keeps running in tmux (session testopt); `testopt job` shows it",
+                "job {} not done after {}s; it keeps running in tmux; `testopt job` shows it",
                 job_dir.display(),
                 timeout.as_secs()
             );
