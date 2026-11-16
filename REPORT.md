@@ -469,3 +469,17 @@ commits were safe, and the work resumed in session `testopt-agent`.
 - **No consult was needed.** No decision blocked on a judgment call; the
   conservative choices (scratch worktree, one heavy job at a time) were
   the defaults.
+
+## Cleanup
+
+- **The job session.** `testopt tmux-kill` killed tmux session `testopt`,
+  the job session. `testopt-agent`, the session this agent runs in, was
+  left alone.
+- **The worktree.** `git -C ~/Developments/afkconvoy worktree remove
+  work/afkconvoy-target` unregistered it and deleted `target/`. Then it
+  stopped with "Permission denied": afkconvoy's tests leave read-only
+  `home/.agents/skills/fake` dirs in their `TMPDIR`. The remaining 3.5 MB
+  were testopt's own unregistered scratch copy, so they were deleted
+  after `chmod -R u+w`.
+- **afkconvoy itself.** `git worktree list` in afkconvoy names no testopt
+  path, and nothing in afkconvoy was committed or pushed.
