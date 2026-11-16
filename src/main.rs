@@ -444,6 +444,8 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 }
                 let test =
                     test.ok_or_else(|| anyhow::anyhow!("--test is needed (or --from-check)"))?;
+                // One name per test, as `record` and `check` write it.
+                let test = probe::resolve(&ws, &store, &test)?.to_string();
                 let (mut before, mut after, mut reason) = (before, after, reason);
                 if from_times {
                     let (b, a, note) = ledger::from_times(&store, &test)?;

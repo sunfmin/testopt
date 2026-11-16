@@ -74,15 +74,25 @@ pub fn add(ws: &Workspace, store: &Store, a: Add) -> Result<Value> {
     Ok(json!({"added": e, "saved_s": e.saved_s().map(round)}))
 }
 
-pub fn totals(entries: &[Entry]) -> Value {
-    let kept: Vec<&Entry> = entries.iter().filter(|e| e.status == "kept").collect();
+/// Totals over each test's newest entry: a later entry (a kept change
+/// undone, a rejection reconsidered) replaces what came before it.
+pub fn totals(all: &[Entry]) -> Value {
+    let mut newest: Vec<&Entry> = vec![];
+    for e in all.iter().rev() {
+        if !newest.iter().any(|n| n.test == e.test) {
+            newest.push(e);
+        }
+    }
+    let entries = &newest;
+    let kept: Vec<&&Entry> = entries.iter().filter(|e| e.status == "kept").collect();
     let saved: f64 = kept.iter().filter_map(|e| e.saved_s()).sum();
     let wall: f64 = kept
         .iter()
         .filter_map(|e| Some(e.saved_s()? / e.threads? as f64))
         .sum();
     json!({
-        "entries": entries.len(),
+        "entries": all.len(),
+        "tests": entries.len(),
         "tried": entries.iter().filter(|e| e.status == "tried").count(),
         "kept": kept.len(),
         "rejected": entries.iter().filter(|e| e.status == "rejected").count(),

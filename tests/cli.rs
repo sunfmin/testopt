@@ -450,6 +450,28 @@ fn ledger_keeps_entries_and_names_the_next_candidates() {
     assert!(frame.contains("fixture::it sleeps"), "{frame}");
     assert!(frame.contains("1 kept, 1 rejected"), "{frame}");
     assert!(frame.contains("finished"), "{frame}");
+
+    // A short name is stored as the full id, and a test's newest entry
+    // replaces its earlier ones in the totals: the kept change is undone.
+    let e = fx.ok(&[
+        "ledger",
+        "add",
+        "--test",
+        "sleeps",
+        "--kind",
+        "fixed-wait",
+        "--status",
+        "tried",
+        "--reason",
+        "reverted",
+    ]);
+    assert_eq!(e["added"]["test"], "fixture::it sleeps", "{e:#}");
+    let l = fx.ok(&["ledger"]);
+    assert_eq!(l["totals"]["entries"], 3, "{l:#}");
+    assert_eq!(l["totals"]["tests"], 2);
+    assert_eq!(l["totals"]["kept"], 0);
+    assert_eq!(l["totals"]["tried"], 1);
+    assert_eq!(f(&l["totals"]["kept_test_seconds_saved"]), 0.0);
 }
 
 /// testopt run from inside a tmux session never kills, replaces or fills
