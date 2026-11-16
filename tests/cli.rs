@@ -139,8 +139,23 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     let rank = fx.ok(&["rank"]);
     assert_eq!(rank["totals"]["tests"], 7);
     assert_eq!(f(&rank["totals"]["test_seconds"]), f(&rec["test_seconds"]));
-    assert_eq!(rank["tests"][0]["name"], "sleeps", "{rank:#}");
-    assert!(f(&rank["tests"][0]["seconds"]) >= 1.5);
+    // Slowest first. `sleeps` (1.5 s) and `spawns_processes` (6 × 0.2 s and
+    // spawn costs) are close on a slow runner, so either may lead.
+    let secs: Vec<f64> = rank["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| f(&t["seconds"]))
+        .collect();
+    assert!(secs.windows(2).all(|w| w[0] >= w[1]), "{rank:#}");
+    let sleeps = rank["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|t| t["name"] == "sleeps")
+        .expect("sleeps ranked");
+    assert!(sleeps < 2, "{rank:#}");
+    assert!(f(&rank["tests"][sleeps]["seconds"]) >= 1.5);
     let share: f64 = rank["tests"]
         .as_array()
         .unwrap()
