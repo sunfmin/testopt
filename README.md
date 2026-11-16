@@ -33,6 +33,7 @@ gate exports (e.g. `RUSTUP_TOOLCHAIN`, `TMPDIR`).
 | `testopt dash [--once] [--interval S]` | A terminal view for a tmux pane: the newest job's progress and ETA, the latest run's top 10, and the ledger's totals. Redraws itself. |
 | `testopt ledger` / `testopt ledger add --test T --kind K --status kept\|rejected\|tried --before S --after S --reason R` | The ledger: every candidate tried, its numbers and reason, its totals, and the next candidates (the latest run's slowest tests not yet in it). |
 | `testopt job [ID]` | A job's progress and result. |
+| `testopt tmux-kill [--tmux-session NAME]` | Kills the job session, but never the session testopt runs inside. |
 
 A test is named `<binary-id> <name>` as nextest lists it, or by its name
 alone or the end of its name (`exclusive::a_cut_…`) when that names exactly
@@ -118,6 +119,12 @@ job keeps running and the caller gets an error naming it.
 ```sh
 tmux attach -t testopt     # watch: window 0 is the dash, the rest are jobs
 ```
+
+`--tmux-session NAME` picks another session (default `testopt`). testopt
+never uses or kills the session it runs inside. When `$TMUX` says it runs
+in a session of that name, `--tmux` and `testopt tmux-kill` refuse with an
+error, so an agent working in tmux cannot end itself. Use `testopt
+tmux-kill`, not a raw `tmux kill-session`, to clear the job session.
 
 ## The one-session optimization loop
 
