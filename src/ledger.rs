@@ -123,3 +123,122 @@ pub fn show(store: &Store, next: usize) -> Result<Value> {
         "next": upcoming,
     }))
 }
+
+/// One entry per test a `check` job touched: its numbers are the check's
+/// timings (base median before; working-tree median after, 0 for a deleted
+/// test), its reason the check's verdict. `job` is a job id or `latest`.
+pub fn add_from_check(
+    ws: &Workspace,
+    store: &Store,
+    job: &str,
+    kind: &str,
+    status: &str,
+    change: &str,
+) -> Result<Value> {
+    let dir = if job == "latest" {
+        let mut checks: Vec<std::path::PathBuf> = std::fs::read_dir(store.jobs_dir())?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("-check-"))
+            })
+            .collect();
+        checks.sort();
+        checks
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no check job yet"))?
+    } else {
+        store.jobs_dir().join(job)
+    };
+    let result: Value = serde_json::from_slice(&std::fs::read(dir.join("result.json"))?)?;
+    if result["ok"] != true {
+        bail!(
+            "check job {} did not finish: {}",
+            dir.display(),
+            result["error"]
+        );
+    }
+    let r = &result["result"];
+    let verdict = format!(
+        "check {} vs {}: {} ({} lost lines{})",
+        dir.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        r["base"]
+            .as_str()
+            .map(|b| &b[..b.len().min(9)])
+            .unwrap_or("?"),
+        if r["pass"] == true { "pass" } else { "FAIL" },
+        r["coverage"]["lost_lines"],
+        r["coverage"]["lost"]
+            .as_array()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!(
+                ": {}",
+                l.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .unwrap_or_default()
+    );
+    let mut added = vec![];
+    for t in r["tests"]["timing"].as_array().into_iter().flatten() {
+        let median = |side: &str| t[side]["median_s"].as_f64();
+        let after = match t["change"].as_str() {
+            Some("deleted") => Some(0.0),
+            _ => median("head"),
+        };
+        let unreliable = [&t["base"], &t["head"]]
+            .iter()
+            .any(|s| s["reliable"] == false);
+        let reason = if unreliable {
+            format!("{verdict}; timed on a loaded host (flagged)")
+        } else {
+            verdict.clone()
+        };
+        added.push(add(
+            ws,
+            store,
+            Add {
+                test: t["test"].as_str().unwrap_or_default().to_string(),
+                kind: kind.to_string(),
+                status: status.to_string(),
+                change: if change.is_empty() {
+                    t["change"].as_str().unwrap_or_default().to_string()
+                } else {
+                    change.to_string()
+                },
+                before_s: median("base"),
+                after_s: after,
+                threads: None,
+                reason,
+            },
+        )?);
+    }
+    if added.is_empty() {
+        bail!("check job {} touched no test", dir.display());
+    }
+    Ok(json!({"from": dir, "added": added}))
+}
+
+/// Before and after from the newest two `time` records of `test`: the
+/// older is before, the newer after; a note when either was flagged.
+pub fn from_times(store: &Store, test: &str) -> Result<(f64, f64, Option<String>)> {
+    let times: Vec<crate::probe::Timing> = store.read("times.jsonl")?;
+    let mine: Vec<&crate::probe::Timing> = times.iter().filter(|t| t.test == test).collect();
+    let [.., before, after] = mine.as_slice() else {
+        bail!(
+            "`testopt time` has {} record(s) of {test}; --from-times needs two (before, then after)",
+            mine.len()
+        );
+    };
+    let note = (!before.reliable || !after.reliable).then(|| {
+        format!(
+            "timed on a loaded host (load per core {} / {}), flagged",
+            before.max_load_per_core, after.max_load_per_core
+        )
+    });
+    Ok((before.median_s, after.median_s, note))
+}

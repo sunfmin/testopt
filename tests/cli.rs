@@ -237,6 +237,23 @@ fn time_gives_median_and_spread_and_flags_a_loaded_host() {
         "{t:#}"
     );
     assert_eq!(code, 3);
+    // A second timing of `sleeps`: the ledger takes before and after from
+    // the two, flagged when either was.
+    fx.ok(&["time", "sleeps", "-n", "1", "--max-load-per-core", "0"]);
+    let l = fx.ok(&[
+        "ledger",
+        "add",
+        "--test",
+        "fixture::it sleeps",
+        "--from-times",
+        "--kind",
+        "fixed-wait",
+        "--status",
+        "tried",
+    ]);
+    let e = &l["added"];
+    assert!(f(&e["before_s"]) >= 1.5 && f(&e["after_s"]) >= 1.5, "{l:#}");
+    assert!(e["reason"].as_str().unwrap().contains("flagged"), "{l:#}");
 }
 
 #[test]
@@ -277,6 +294,29 @@ fn check_fails_when_a_line_loses_its_only_test_and_passes_otherwise() {
     assert!(
         f(&c["tests"]["timing"][0]["base"]["median_s"]) >= 0.0,
         "{c:#}"
+    );
+
+    // The ledger takes the check's numbers and verdict as they are.
+    let l = fx.ok(&[
+        "ledger",
+        "add",
+        "--from-check",
+        "latest",
+        "--kind",
+        "redundant",
+        "--status",
+        "kept",
+    ]);
+    let e = &l["added"][0]["added"];
+    assert_eq!(e["test"], "fixture::it classifies_a_positive", "{l:#}");
+    assert_eq!(f(&e["after_s"]), 0.0);
+    assert!(f(&e["before_s"]) >= 0.0);
+    assert!(
+        e["reason"]
+            .as_str()
+            .unwrap()
+            .contains(": pass (0 lost lines"),
+        "{l:#}"
     );
 
     git(&fx.root, &["checkout", "-q", "tests/it.rs"]);

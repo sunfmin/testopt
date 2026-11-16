@@ -174,7 +174,7 @@ enum LedgerCmd {
     Add {
         /// `<binary-id> <name>` of the test (or a name for the change).
         #[arg(long)]
-        test: String,
+        test: Option<String>,
         /// fixed-wait | poll | process-heavy | redundant | setup | other
         #[arg(long)]
         kind: String,
@@ -190,7 +190,14 @@ enum LedgerCmd {
         #[arg(long)]
         threads: Option<usize>,
         #[arg(long)]
-        reason: String,
+        reason: Option<String>,
+        /// One entry per test a check job touched, its numbers and verdict
+        /// from the job (a job id, or `latest`).
+        #[arg(long)]
+        from_check: Option<String>,
+        /// Before and after from the test's newest two `time` records.
+        #[arg(long)]
+        from_times: bool,
     },
 }
 
@@ -346,23 +353,40 @@ fn run(cli: Cli, raw_args: &[String]) -> Result<(Value, i32)> {
                 after,
                 threads,
                 reason,
-            }) => Ok((
-                ledger::add(
-                    &ws,
-                    &store,
-                    ledger::Add {
-                        test,
-                        kind,
-                        status,
-                        change,
-                        before_s: before,
-                        after_s: after,
-                        threads,
-                        reason,
-                    },
-                )?,
-                0,
-            )),
+                from_check,
+                from_times,
+            }) => {
+                if let Some(job) = from_check {
+                    return Ok((
+                        ledger::add_from_check(&ws, &store, &job, &kind, &status, &change)?,
+                        0,
+                    ));
+                }
+                let test =
+                    test.ok_or_else(|| anyhow::anyhow!("--test is needed (or --from-check)"))?;
+                let (mut before, mut after, mut reason) = (before, after, reason);
+                if from_times {
+                    let (b, a, note) = ledger::from_times(&store, &test)?;
+                    before = before.or(Some(b));
+                    after = after.or(Some(a));
+                    reason = match (reason, note) {
+                        (Some(r), Some(n)) => Some(format!("{r}; {n}")),
+                        (r, n) => r.or(n),
+                    };
+                }
+                let reason = reason.ok_or_else(|| anyhow::anyhow!("--reason is needed"))?;
+                let entry = ledger::Add {
+                    test,
+                    kind,
+                    status,
+                    change,
+                    before_s: before,
+                    after_s: after,
+                    threads,
+                    reason,
+                };
+                Ok((ledger::add(&ws, &store, entry)?, 0))
+            }
         },
         Cmd::Env { change } => Ok((
             match change {
