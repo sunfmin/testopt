@@ -212,13 +212,34 @@ fn cache_dir(store: &Store, tree: &str) -> PathBuf {
     store.dir.join("coverage").join(tree)
 }
 
+/// Which tests coverage is measured for.
+pub enum Scope<'a> {
+    /// A nextest filter (None: every test).
+    Filter(Option<&'a str>),
+    /// Tests whose function is in one of `files` (relative to the
+    /// workspace root), and the tests `ids`.
+    Auto {
+        files: BTreeSet<String>,
+        ids: BTreeSet<TestId>,
+    },
+}
+
+impl Scope<'_> {
+    fn filter(&self) -> Option<&str> {
+        match self {
+            Scope::Filter(f) => *f,
+            Scope::Auto { .. } => None,
+        }
+    }
+}
+
 /// Covered lines of every test `filter` selects in `ws`, measured in one
 /// instrumented nextest run (cached per tree: tests measured before are not
 /// run again). Coverage builds go to `cov_target`, apart from normal builds.
 pub fn collect(
     ws: &Workspace,
     store: &Store,
-    filter: Option<&str>,
+    scope: &Scope,
     profile: &str,
     cov_target: &Path,
     note: &dyn Fn(&str),
@@ -242,7 +263,13 @@ pub fn collect(
         "coverage: listing tests (instrumented build into {})",
         cov_target.display()
     ));
-    let listed = nextest::list(ws, filter, &env)?;
+    let mut listed = nextest::list(ws, scope.filter(), &env)?;
+    if let Scope::Auto { files, ids } = scope {
+        let mut loc = crate::record::Locator::new(ws);
+        listed.retain(|l| {
+            ids.contains(&l.id) || loc.locate(&l.id).is_some_and(|(f, _)| files.contains(&f))
+        });
+    }
     let mut have: HashMap<TestId, Covered> = HashMap::new();
     let mut missing = vec![];
     for l in &listed {
@@ -568,7 +595,14 @@ pub fn covers(
     };
     let note = |m: &str| eprintln!("[testopt] {m}");
     let started = std::time::Instant::now();
-    let mut all = collect(ws, store, Some(&filter), profile, &cov_target(ws), &note)?;
+    let mut all = collect(
+        ws,
+        store,
+        &Scope::Filter(Some(&filter)),
+        profile,
+        &cov_target(ws),
+        &note,
+    )?;
     // Any other test measured on this same tree counts too.
     let cache = cache_dir(store, &tree_key(ws));
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
@@ -836,16 +870,13 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
         "check: base {commit} copied to {}",
         base_ws.root.display()
     ));
-    let base_cov = collect(
-        &base_ws,
-        store,
-        o.filter.as_deref(),
-        o.profile,
-        &cov_base,
-        note,
-    )?;
+    let (scope, unknown) = match &o.filter {
+        Some(f) => (Scope::Filter(Some(f.as_str())), vec![]),
+        None => auto_scope(ws, store, &base_ws, &commit, note)?,
+    };
+    let base_cov = collect(&base_ws, store, &scope, o.profile, &cov_base, note)?;
     note("check: base coverage done; now the working tree");
-    let head_cov = collect(ws, store, o.filter.as_deref(), o.profile, &cov, note)?;
+    let head_cov = collect(ws, store, &scope, o.profile, &cov, note)?;
     let base_u = union(&base_cov);
     let head_u = union(&head_cov);
     let map = LineMap::from_git(&ws.root, &commit)?;
@@ -995,7 +1026,12 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
         "pass": pass,
         "verdict": if pass { "pass: every line and branch arm covered at base and still in the code is covered" } else { "FAIL: lines or branch arms covered at base are covered by no test now" },
         "base": commit,
-        "scope": o.filter.as_deref().map(|f| if f.len() > 200 { format!("{}…", &f[..200]) } else { f.to_string() }).unwrap_or_else(|| "all tests".into()),
+        "scope": match &scope {
+            Scope::Filter(Some(f)) => json!(if f.len() > 200 { format!("{}…", &f[..200]) } else { f.to_string() }),
+            Scope::Filter(None) => json!("all tests"),
+            Scope::Auto { files, ids } => json!({"auto": true, "test_files": files, "covering_tests": ids.len()}),
+        },
+        "scope_unknown_for": unknown,
         "coverage": {
             "base_tests": base_cov.len(),
             "head_tests": head_cov.len(),
@@ -1082,6 +1118,97 @@ fn union_arms(all: &HashMap<TestId, Covered>) -> Lines {
         }
     }
     u
+}
+
+/// The scope `check` picks itself, from the diff against `commit`: tests
+/// whose function is in a changed file (each side located in its own
+/// tree), and tests that covered a changed file of code under test in any
+/// coverage measured on the base tree before. A changed file no cached
+/// coverage reaches is named: the scope may miss its tests.
+fn auto_scope<'a>(
+    ws: &Workspace,
+    store: &Store,
+    base_ws: &Workspace,
+    commit: &str,
+    note: &dyn Fn(&str),
+) -> Result<(Scope<'a>, Vec<String>)> {
+    let git = |args: &[&str]| -> Result<Vec<String>> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&ws.root)
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect())
+    };
+    // `--relative`: paths relative to the workspace root, as the scope's are.
+    let mut changed: BTreeSet<String> = BTreeSet::new();
+    for p in git(&["diff", "--name-only", "--relative", commit, "--"])?
+        .into_iter()
+        .chain(git(&["ls-files", "--others", "--exclude-standard"])?)
+    {
+        if p.ends_with(".rs") {
+            changed.insert(p);
+        }
+    }
+    let is_test_file = |f: &str| {
+        f.split('/')
+            .any(|c| matches!(c, "tests" | "benches" | "examples"))
+    };
+    let mut ids = BTreeSet::new();
+    let mut unknown = vec![];
+    let cached: Vec<Covered> = std::fs::read_dir(cache_dir(store, &tree_key(base_ws)))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            std::fs::read(e.path())
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Covered>(&b).ok())
+        })
+        .collect();
+    for f in &changed {
+        let mut reached = false;
+        for c in &cached {
+            if c.lines.contains_key(f) {
+                ids.insert(c.test.clone());
+                reached = true;
+            }
+        }
+        // Test code (a tests/ file, or a file holding test modules) is
+        // scoped by where tests are; code under test only by coverage.
+        let holds_tests = is_test_file(f)
+            || source_holds_tests(&ws.root.join(f))
+            || source_holds_tests(&base_ws.root.join(f));
+        if !reached && !holds_tests {
+            unknown.push(f.clone());
+        }
+    }
+    note(&format!(
+        "check: auto scope: tests in {} changed file(s), {} test(s) that covered changed code at base{}",
+        changed.len(),
+        ids.len(),
+        if unknown.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; no coverage cached for {} (give -E to widen)",
+                unknown.join(", ")
+            )
+        }
+    ));
+    Ok((
+        Scope::Auto {
+            files: changed,
+            ids,
+        },
+        unknown,
+    ))
+}
+
+fn source_holds_tests(path: &Path) -> bool {
+    SourceFile::load(path).is_some_and(|f| !test_code_lines(&f).is_empty())
 }
 
 #[cfg(test)]

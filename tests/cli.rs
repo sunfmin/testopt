@@ -593,3 +593,51 @@ fn tests_on_one_line_down_different_arms_do_not_overlap_and_check_keeps_each_arm
     assert_eq!(c["coverage"]["lost_arms"], 1, "{c:#}");
     assert_no_profiles(&fx.root);
 }
+
+#[test]
+fn check_picks_its_scope_from_the_diff_and_names_what_it_cannot_see() {
+    let fx = Fixture::new();
+    // Code under test changed, no coverage cached yet: named, not guessed.
+    let lib = fx.root.join("src/lib.rs");
+    let src = std::fs::read_to_string(&lib).unwrap();
+    std::fs::write(
+        &lib,
+        src.replace("pub fn classify", "// moved\npub fn classify"),
+    )
+    .unwrap();
+    let c = fx.ok(&["check", "HEAD", "-n", "1"]);
+    assert_eq!(
+        c["scope_unknown_for"],
+        serde_json::json!(["src/lib.rs"]),
+        "{c:#}"
+    );
+    git(&fx.root, &["checkout", "-q", "src/lib.rs"]);
+
+    // A test file changed: its tests are the scope.
+    fx.delete_test("classifies_every_sign");
+    let (c, code) = fx.run(&["check", "HEAD", "-n", "1"]);
+    assert_eq!(code, 1, "{c:#}");
+    assert_eq!(
+        c["scope"]["test_files"],
+        serde_json::json!(["tests/it.rs"]),
+        "{c:#}"
+    );
+    assert_eq!(c["coverage"]["base_tests"], 7, "{c:#}");
+    assert_eq!(
+        c["coverage"]["lost"],
+        serde_json::json!(["src/lib.rs:10", "src/lib.rs:12"])
+    );
+    git(&fx.root, &["checkout", "-q", "tests/it.rs"]);
+
+    // Code under test changed, the base's coverage now cached: the tests
+    // that covered it are the scope, and nothing is unknown.
+    std::fs::write(
+        &lib,
+        src.replace("pub fn classify", "// moved\npub fn classify"),
+    )
+    .unwrap();
+    let c = fx.ok(&["check", "HEAD", "-n", "1"]);
+    assert_eq!(c["scope_unknown_for"], serde_json::json!([]), "{c:#}");
+    assert!(c["scope"]["covering_tests"].as_u64().unwrap() >= 2, "{c:#}");
+    assert_eq!(c["pass"], true, "{c:#}");
+}
