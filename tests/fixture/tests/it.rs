@@ -36,3 +36,13 @@ fn classifies_every_sign() {
 fn classifies_a_positive() {
     assert_eq!(fixture::classify(7), "positive");
 }
+
+#[test]
+fn larger_keeps_the_first() {
+    assert_eq!(fixture::larger(5, 3), 5);
+}
+
+#[test]
+fn larger_takes_the_second() {
+    assert_eq!(fixture::larger(3, 5), 5);
+}

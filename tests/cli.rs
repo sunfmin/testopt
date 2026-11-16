@@ -127,17 +127,17 @@ fn f(v: &Value) -> f64 {
 fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     let fx = Fixture::new();
     let rec = fx.ok(&["record", "--test-threads", "4"]);
-    assert_eq!(rec["tests"], 5, "{rec:#}");
+    assert_eq!(rec["tests"], 7, "{rec:#}");
     assert_eq!(rec["threads"], 4);
     assert!(
         rec["nextest_summary"]
             .as_str()
             .unwrap()
-            .contains("5 tests run"),
+            .contains("7 tests run"),
         "{rec:#}"
     );
     let rank = fx.ok(&["rank"]);
-    assert_eq!(rank["totals"]["tests"], 5);
+    assert_eq!(rank["totals"]["tests"], 7);
     assert_eq!(f(&rank["totals"]["test_seconds"]), f(&rec["test_seconds"]));
     assert_eq!(rank["tests"][0]["name"], "sleeps", "{rank:#}");
     assert!(f(&rank["tests"][0]["seconds"]) >= 1.5);
@@ -154,7 +154,7 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     );
     assert_eq!(rank["tests"][0]["at"], "tests/it.rs:10");
     assert_eq!(rank["files"][0]["file"], "tests/it.rs");
-    // The replayed schedule: 5 tests on 4 slots end with the 1.5s sleep;
+    // The replayed schedule: 7 tests on 4 slots end with the 1.5s sleep;
     // without it the run ends with the next longest, so it saves the gap.
     assert_eq!(rank["totals"]["replayed_from"], "JUnit start order");
     let replayed = f(&rank["totals"]["replayed_wall_s"]);
@@ -164,11 +164,11 @@ fn record_keeps_every_test_and_rank_reproduces_its_totals() {
     );
     let saving = f(&rank["tests"][0]["replayed_wall_saving_s"]);
     assert!(saving > 0.0 && saving < 1.5, "{rank:#}");
-    assert_eq!(
-        f(&rank["tests"][4]["replayed_wall_saving_s"]),
-        0.0,
-        "{rank:#}"
-    );
+    // No test saves more than its own time, nor less than nothing.
+    for t in rank["tests"].as_array().unwrap() {
+        let s = f(&t["replayed_wall_saving_s"]);
+        assert!((0.0..=f(&t["seconds"]) + 1e-3).contains(&s), "{t:#}");
+    }
 
     // Under a profile of the repo's own: its thread count, its settings.
     let slow = fx.ok(&["record", "--profile", "slow", "-E", "test(fast_adds)"]);
@@ -195,14 +195,21 @@ fn why_finds_a_fixed_wait_in_a_helper_and_counts_spawned_processes() {
 
     let w = fx.ok(&["why", "fixture::it spawns_processes"]);
     assert_eq!(w["kind"], "process-heavy", "{w:#}");
-    assert_eq!(w["processes"]["spawned"], 6, "{w:#}");
-    // A range: at least what was seen, at most that plus what the host
-    // started unseen.
-    assert!(
-        w["processes"]["spawned_at_most"].as_u64().unwrap() >= 6,
+    // Each of the six `sleep`s once. The test process may start a
+    // short-lived helper of its own besides (seen under a stress run, as a
+    // copy of the test binary living under one sample), so the total is at
+    // least six, and the range [spawned, spawned_at_most] holds six.
+    let sleeps = &w["processes"]["by_program"][0];
+    assert_eq!(
+        (sleeps["program"].as_str(), sleeps["count"].as_u64()),
+        (Some("sleep"), Some(6)),
         "{w:#}"
     );
-    assert_eq!(w["processes"]["by_program"][0]["program"], "sleep", "{w:#}");
+    let seen = w["processes"]["spawned"].as_u64().unwrap();
+    assert!(
+        seen >= 6 && w["processes"]["spawned_at_most"].as_u64().unwrap() >= seen,
+        "{w:#}"
+    );
     assert!(
         f(&w["breakdown"]["with_child_processes_alive_s"]) >= 1.0,
         "{w:#}"
@@ -401,7 +408,7 @@ fn ledger_keeps_entries_and_names_the_next_candidates() {
         !next.contains(&"fixture::it sleeps") && !next.contains(&"fixture::it spawns_processes"),
         "{next:?}"
     );
-    assert_eq!(next.len(), 3);
+    assert_eq!(next.len(), 5);
 
     let out = Command::new(env!("CARGO_BIN_EXE_testopt"))
         .args(["-C", fx.root.to_str().unwrap(), "dash", "--once"])
@@ -558,4 +565,31 @@ fn a_changed_test_is_timed_on_both_trees_interleaved_with_its_cpu() {
     let time = fx.ok(&["time", "spawns_processes", "-n", "1"]);
     assert_eq!(time["cpu_runs"].as_array().unwrap().len(), 1, "{time:#}");
     assert!(f(&time["cpu_median_s"]) > 0.0, "{time:#}");
+}
+
+#[test]
+fn tests_on_one_line_down_different_arms_do_not_overlap_and_check_keeps_each_arm() {
+    let fx = Fixture::new();
+    let c = fx.ok(&[
+        "covers",
+        "larger_keeps_the_first",
+        "--against",
+        "test(larger_)",
+    ]);
+    let other = &c["others"][0];
+    assert_eq!(other["test"], "fixture::it larger_takes_the_second");
+    // The same line...
+    assert_eq!(f(&other["share_of_this"]), 1.0, "{c:#}");
+    // ...down another arm: neither is within the other.
+    assert_eq!(other["shared_arms"], 0, "{c:#}");
+    assert_eq!(other["this_within_it"], false);
+    assert_eq!(c["arms_taken_by_no_other"], 1);
+    assert_eq!(c["unattributed_profiles"], 0);
+
+    fx.delete_test("larger_takes_the_second");
+    let (c, code) = fx.run(&["check", "HEAD", "-E", "test(larger_)", "-n", "1"]);
+    assert_eq!(code, 1, "{c:#}");
+    assert_eq!(c["coverage"]["lost_lines"], 0, "{c:#}");
+    assert_eq!(c["coverage"]["lost_arms"], 1, "{c:#}");
+    assert_no_profiles(&fx.root);
 }

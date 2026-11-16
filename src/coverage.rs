@@ -29,12 +29,31 @@ use crate::workspace::{Workspace, fnv, rust_files};
 /// file (relative to the workspace root) → covered lines.
 pub type Lines = BTreeMap<String, BTreeSet<u32>>;
 
+/// A branch arm as one value of a `Lines` map: its line, shifted, and the
+/// arm's index (lcov's block and branch) below. Two tests that cover one
+/// line but take different arms of it do not overlap there.
+pub fn arm(line: u32, block: u32, branch: u32) -> u32 {
+    (line << 8) | ((block * 16 + branch).min(255))
+}
+
+pub fn arm_line(unit: u32) -> u32 {
+    unit >> 8
+}
+
+/// The cache's format: a tree's coverage measured before it changed is
+/// measured again.
+const FORMAT: &str = "v2-branches";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Covered {
     pub test: TestId,
     pub tree: String,
     pub status: String,
     pub lines: Lines,
+    /// Branch arms taken, as `arm()` units (empty where the toolchain has
+    /// no branch coverage).
+    #[serde(default)]
+    pub branches: Lines,
 }
 
 pub fn count(l: &Lines) -> usize {
@@ -96,7 +115,7 @@ pub fn tree_key(ws: &Workspace) -> String {
         h ^= fnv(ws.relative(&f).to_string_lossy().as_bytes());
         h = h.wrapping_mul(0x100000001b3) ^ fnv(&bytes);
     }
-    format!("{h:016x}")
+    format!("{h:016x}-{FORMAT}")
 }
 
 fn host_triple() -> Result<String> {
@@ -131,13 +150,23 @@ fn llvm_tool(ws: &Workspace, tool: &str) -> Result<PathBuf> {
 /// The environment of an instrumented build, from `cargo llvm-cov show-env`,
 /// building into `target_dir`.
 fn cov_env(ws: &Workspace, target_dir: &Path) -> Result<Vec<(String, String)>> {
-    let out = Command::new("cargo")
-        .args(["llvm-cov", "show-env", "--sh"])
-        .current_dir(&ws.root)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .env("CARGO_LLVM_COV_TARGET_DIR", target_dir)
-        .output()
-        .context("running cargo llvm-cov (is cargo-llvm-cov installed?)")?;
+    // Branch coverage where the toolchain has it (nightly), lines alone otherwise.
+    let show = |branch: bool| {
+        let mut c = Command::new("cargo");
+        c.args(["llvm-cov", "show-env", "--sh"]);
+        if branch {
+            c.arg("--branch");
+        }
+        c.current_dir(&ws.root)
+            .env("CARGO_TARGET_DIR", target_dir)
+            .env("CARGO_LLVM_COV_TARGET_DIR", target_dir)
+            .output()
+            .context("running cargo llvm-cov (is cargo-llvm-cov installed?)")
+    };
+    let mut out = show(true)?;
+    if !out.status.success() {
+        out = show(false)?;
+    }
     if !out.status.success() {
         bail!(
             "cargo llvm-cov show-env failed: {}",
@@ -254,6 +283,7 @@ pub fn collect(
         .map(|l| format!("({})", l.id.filter()))
         .collect::<Vec<_>>()
         .join(" | ");
+    let began = std::time::SystemTime::now();
     let out = nextest::run(
         ws,
         &Spec {
@@ -264,6 +294,18 @@ pub fn collect(
             ..Default::default()
         },
     )?;
+    // A process that dropped LLVM_PROFILE_FILE (started with a cleared
+    // environment) wrote `default_*.profraw` where it ran: no test can be
+    // told from it. It is moved out of the target's tree and counted, so
+    // the loss is said, not silent.
+    let unattributed = sweep_profiles(&ws.root, began, &cache.join("unattributed"))?;
+    if unattributed > 0 {
+        note(&format!(
+            "coverage: {unattributed} profile(s) written by processes that dropped LLVM_PROFILE_FILE; their lines count for no test"
+        ));
+    }
+    let prior = unattributed_of(&cache);
+    write_json(&cache.join("unattributed.json"), &(prior + unattributed))?;
     let status: HashMap<TestId, String> = out
         .tests
         .iter()
@@ -315,12 +357,13 @@ pub fn collect(
         }
     });
     for (id, r) in results.into_inner().unwrap() {
-        let lines = r.with_context(|| format!("coverage of {id}"))?;
+        let (lines, branches) = r.with_context(|| format!("coverage of {id}"))?;
         let c = Covered {
             test: id.clone(),
             tree: tree.clone(),
             status: status.get(&id).cloned().unwrap_or("missing".into()),
             lines,
+            branches,
         };
         write_json(
             &cache.join(format!("{}.json", test_key(&id.binary_id, &id.name))),
@@ -340,7 +383,7 @@ fn export_one(
     bins: &[PathBuf],
     ws: &Workspace,
     test_code: &TestCode,
-) -> Result<Lines> {
+) -> Result<(Lines, Lines)> {
     let raws: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|d| {
             d.flatten()
@@ -350,7 +393,7 @@ fn export_one(
         })
         .unwrap_or_default();
     if raws.is_empty() {
-        return Ok(Lines::new());
+        return Ok((Lines::new(), Lines::new()));
     }
     let merged = dir.join("merged.profdata");
     let st = Command::new(profdata)
@@ -418,8 +461,9 @@ impl TestCode {
     }
 }
 
-pub fn parse_lcov(text: &str, ws: &Workspace, test_code: &TestCode) -> Lines {
+pub fn parse_lcov(text: &str, ws: &Workspace, test_code: &TestCode) -> (Lines, Lines) {
     let mut out = Lines::new();
+    let mut arms = Lines::new();
     let mut file: Option<String> = None;
     for line in text.lines() {
         if let Some(f) = line.strip_prefix("SF:") {
@@ -440,12 +484,27 @@ pub fn parse_lcov(text: &str, ws: &Workspace, test_code: &TestCode) -> Lines {
             if c > 0 && !test_code.is_test(f, l) {
                 out.entry(f.clone()).or_default().insert(l);
             }
+        } else if let Some(br) = line.strip_prefix("BRDA:") {
+            // BRDA:line,block,branch,taken (taken is `-` for never reached)
+            let Some(f) = &file else { continue };
+            let p: Vec<&str> = br.split(',').collect();
+            let [l, b, n, taken] = p.as_slice() else {
+                continue;
+            };
+            let (Ok(l), Ok(b), Ok(n)) = (l.parse::<u32>(), b.parse::<u32>(), n.parse::<u32>())
+            else {
+                continue;
+            };
+            if taken.parse::<u64>().is_ok_and(|t| t > 0) && !test_code.is_test(f, l) {
+                arms.entry(f.clone()).or_default().insert(arm(l, b, n));
+            }
         } else if line == "end_of_record" {
             file = None;
         }
     }
     out.retain(|_, v| !v.is_empty());
-    out
+    arms.retain(|_, v| !v.is_empty());
+    (out, arms)
 }
 
 fn intersect(a: &Lines, b: &Lines) -> usize {
@@ -525,8 +584,11 @@ pub fn covers(
     };
     let mine = &me.lines;
     let n = count(mine);
+    let my_arms = &me.branches;
+    let n_arms = count(my_arms);
     let mut others = vec![];
     let mut union_others = Lines::new();
+    let mut union_arms = Lines::new();
     for (oid, c) in &all {
         if oid == id {
             continue;
@@ -534,20 +596,30 @@ pub fn covers(
         for (f, ls) in &c.lines {
             union_others.entry(f.clone()).or_default().extend(ls);
         }
+        for (f, a) in &c.branches {
+            union_arms.entry(f.clone()).or_default().extend(a);
+        }
         let shared = intersect(mine, &c.lines);
         if shared == 0 {
             continue;
         }
         let theirs = count(&c.lines);
+        // Within another only when its lines and its branch arms both are:
+        // one line taken down a different arm is not the same coverage.
+        let shared_arms = intersect(my_arms, &c.branches);
+        let their_arms = count(&c.branches);
         others.push(json!({
             "test": oid.to_string(),
             "lines": theirs,
             "shared": shared,
             "share_of_this": round(shared as f64 / n.max(1) as f64),
-            "this_within_it": shared == n,
-            "it_within_this": shared == theirs,
+            "branch_arms": their_arms,
+            "shared_arms": shared_arms,
+            "this_within_it": shared == n && shared_arms == n_arms,
+            "it_within_this": shared == theirs && shared_arms == their_arms,
         }));
     }
+    let unique_arms = minus(my_arms, &union_arms);
     others.sort_by(|a, b| b["shared"].as_u64().cmp(&a["shared"].as_u64()));
     let unique = minus(mine, &union_others);
     let by_file: Vec<Value> = mine
@@ -563,6 +635,10 @@ pub fn covers(
         "compared_with": all.len() - 1,
         "covered_by_no_other": count(&unique),
         "covered_by_no_other_sample": sample(&unique, 15),
+        "branch_arms": n_arms,
+        "arms_taken_by_no_other": count(&unique_arms),
+        "arms_taken_by_no_other_sample": sample_arms(&unique_arms, 15),
+        "unattributed_profiles": unattributed_of(&cache),
         "others": others,
         "seconds": round(started.elapsed().as_secs_f64()),
     }))
@@ -804,6 +880,22 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
             }
         }
     }
+    // Branch arms the same way: an arm taken at base, on a line the diff
+    // kept, must be taken by some test now.
+    let base_arms = union_arms(&base_cov);
+    let head_arms = union_arms(&head_cov);
+    let mut lost_arms = Lines::new();
+    for (f, units) in &base_arms {
+        for &u in units {
+            if let Some((hf, hl)) = map.map(&prefix(f), arm_line(u)) {
+                let hf = unprefix(&hf);
+                let moved = (hl << 8) | (u & 0xff);
+                if !head_arms.get(&hf).is_some_and(|s| s.contains(&moved)) {
+                    lost_arms.entry(hf).or_default().insert(moved);
+                }
+            }
+        }
+    }
     // Which base tests covered each lost line (by its base position).
     let mut lost_detail = vec![];
     for (f, ls) in &base_u {
@@ -898,10 +990,10 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
         timed.push(json!({"test": id.to_string(), "change": "added", "base": null, "head": after, "delta_s": delta}));
     }
     let total_delta: f64 = timed.iter().filter_map(|t| t["delta_s"].as_f64()).sum();
-    let pass = lost.is_empty();
+    let pass = lost.is_empty() && lost_arms.is_empty();
     Ok(json!({
         "pass": pass,
-        "verdict": if pass { "pass: every line covered at base and still in the code is covered" } else { "FAIL: lines covered at base are covered by no test now" },
+        "verdict": if pass { "pass: every line and branch arm covered at base and still in the code is covered" } else { "FAIL: lines or branch arms covered at base are covered by no test now" },
         "base": commit,
         "scope": o.filter.as_deref().map(|f| if f.len() > 200 { format!("{}…", &f[..200]) } else { f.to_string() }).unwrap_or_else(|| "all tests".into()),
         "coverage": {
@@ -913,6 +1005,11 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
             "lost_lines": count(&lost),
             "lost": sample(&lost, 30),
             "lost_detail": lost_detail,
+            "base_branch_arms": count(&base_arms),
+            "head_branch_arms": count(&head_arms),
+            "lost_arms": count(&lost_arms),
+            "lost_arms_sample": sample_arms(&lost_arms, 30),
+            "unattributed_profiles": unattributed_of(&cache_dir(store, &tree_key(ws))),
         },
         "tests": {
             "deleted": deleted.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
@@ -923,6 +1020,68 @@ pub fn check(ws: &Workspace, store: &Store, o: &CheckOpts, note: &dyn Fn(&str)) 
         },
         "seconds": round(started.elapsed().as_secs_f64()),
     }))
+}
+
+/// Moves every `.profraw` under `root` (but `target`) written since `since`
+/// into `dest`; how many there were.
+fn sweep_profiles(root: &Path, since: std::time::SystemTime, dest: &Path) -> Result<usize> {
+    let mut n = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name();
+            if p.is_dir() {
+                if name != "target" && name != ".git" {
+                    stack.push(p);
+                }
+                continue;
+            }
+            let fresh = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|m| m >= since);
+            if p.extension().is_some_and(|x| x == "profraw") && fresh {
+                std::fs::create_dir_all(dest)?;
+                std::fs::rename(&p, dest.join(&name))?;
+                n += 1;
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Profiles of tree `cache` no test could be told from, over its runs.
+fn unattributed_of(cache: &Path) -> usize {
+    std::fs::read(cache.join("unattributed.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(0)
+}
+
+/// Branch arms as `file:line(arm N)`.
+fn sample_arms(arms: &Lines, n: usize) -> Vec<String> {
+    arms.iter()
+        .flat_map(|(f, units)| {
+            units
+                .iter()
+                .map(move |u| format!("{f}:{} (arm {})", arm_line(*u), u & 0xff))
+        })
+        .take(n)
+        .collect()
+}
+
+fn union_arms(all: &HashMap<TestId, Covered>) -> Lines {
+    let mut u = Lines::new();
+    for c in all.values() {
+        for (f, a) in &c.branches {
+            u.entry(f.clone()).or_default().extend(a);
+        }
+    }
+    u
 }
 
 #[cfg(test)]

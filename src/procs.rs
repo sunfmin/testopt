@@ -143,9 +143,15 @@ impl Sampler {
                     if !ours.contains(pid) {
                         continue;
                     }
-                    let same = tracked_start
-                        .get(pid)
-                        .is_some_and(|s| (s - info.start).abs() < 1e-3);
+                    // A pid is reused only once the host has handed out every
+                    // other (99,999 on macOS): minutes, not the milliseconds
+                    // between samples. So a pid whose start reads a little
+                    // differently is the same process; only a start more than a
+                    // second past its last sighting is a new one.
+                    let same = tracked_start.contains_key(pid)
+                        && tracked
+                            .get(pid)
+                            .is_some_and(|old| info.start <= old.last_seen + 1.0);
                     if !same {
                         tracked_start.insert(*pid, info.start);
                         let key_old = tracked.remove(pid);

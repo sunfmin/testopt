@@ -14,3 +14,6 @@ pub fn classify(n: i32) -> &'static str {
         "positive"
     }
 }
+
+/// One line, two arms: tests that take different arms cover the same line.
+pub fn larger(a: i32, b: i32) -> i32 { if a >= b { a } else { b } }
